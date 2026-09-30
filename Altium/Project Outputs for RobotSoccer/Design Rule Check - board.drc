@@ -1,7 +1,7 @@
 Protel Design System Design Rule Check
 PCB File : C:\Users\Brian Wang\Desktop\RobotSoccerV3\Altium\board.PcbDoc
 Date     : 1/10/2026
-Time     : 11:24:59 am
+Time     : 12:05:40 pm
 
 Processing Rule : Clearance Constraint (Gap=0.5mm) (All),(All)
 Rule Violations :0
@@ -18,7 +18,7 @@ Rule Violations :0
 Processing Rule : Width Constraint (Min=0.2mm) (Max=1.2mm) (Preferred=0.254mm) (All)
 Rule Violations :0
 
-Processing Rule : Width Constraint (Min=0.5mm) (Max=1.2mm) (Preferred=1mm) (InNetClass('Power'))
+Processing Rule : Width Constraint (Min=0.8mm) (Max=1.5mm) (Preferred=1mm) (InNetClass('Power'))
 Rule Violations :0
 
 Processing Rule : Routing Topology Rule(Topology=Shortest) (All)
