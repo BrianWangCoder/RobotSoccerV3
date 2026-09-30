@@ -1,0 +1,189 @@
+Added Component: Designator=3V3(Test-Pin-TH)
+Added Component: Designator=5V(Test-Pin-TH)
+Added Component: Designator=11.1V(Test-Pin-TH)
+Added Component: Designator=A01(Test-Pin-TH)
+Added Component: Designator=A02(Test-Pin-TH)
+Added Component: Designator=B01(Test-Pin-TH)
+Added Component: Designator=B02(Test-Pin-TH)
+Added Component: Designator=C1(FP-RAD-TH-D_6_3_0_5-L_11-MFG)
+Added Component: Designator=C2(FP-RAD-TH-D_6_3_0_5-L_11-MFG)
+Added Component: Designator=GND(Test-Pin-TH)
+Added Component: Designator=J1(HDR1X6)
+Add component (AddParameter): Name = "LatestRevisionDate"; Value = "17-Jul-2002"; VariantName = "[No Variations]"
+Add component (AddParameter): Name = "LatestRevisionNote"; Value = "Re-released for DXP Platform."; VariantName = "[No Variations]"
+Add component (AddParameter): Name = "Publisher"; Value = "Altium Limited"; VariantName = "[No Variations]"
+Added Component: Designator=J2(HDR1X6)
+Add component (AddParameter): Name = "LatestRevisionDate"; Value = "17-Jul-2002"; VariantName = "[No Variations]"
+Add component (AddParameter): Name = "LatestRevisionNote"; Value = "Re-released for DXP Platform."; VariantName = "[No Variations]"
+Add component (AddParameter): Name = "Publisher"; Value = "Altium Limited"; VariantName = "[No Variations]"
+Added Component: Designator=J3(FP-B2B-XH-A_LF_SN-MFG)
+Add component (AddParameter): Name = "Color"; Value = "Natural"; VariantName = "[No Variations]"
+Add component (AddParameter): Name = "Connector Type"; Value = "Male Pin"; VariantName = "[No Variations]"
+Add component (AddParameter): Name = "Contact Material"; Value = "Brass"; VariantName = "[No Variations]"
+Add component (AddParameter): Name = "Contact Plating"; Value = "Tin"; VariantName = "[No Variations]"
+Add component (AddParameter): Name = "Contact Resistance"; Value = "20mR"; VariantName = "[No Variations]"
+Add component (AddParameter): Name = "Contact Type"; Value = "Male Pin"; VariantName = "[No Variations]"
+Add component (AddParameter): Name = "Current Rating"; Value = "3A"; VariantName = "[No Variations]"
+Add component (AddParameter): Name = "Depth"; Value = "5.75mm"; VariantName = "[No Variations]"
+Add component (AddParameter): Name = "Fastening Type"; Value = "Detent"; VariantName = "[No Variations]"
+Add component (AddParameter): Name = "Housing Color"; Value = "White"; VariantName = "[No Variations]"
+Add component (AddParameter): Name = "Housing Material"; Value = "Polyamide"; VariantName = "[No Variations]"
+Add component (AddParameter): Name = "Insulation Resistance"; Value = "1GR"; VariantName = "[No Variations]"
+Add component (AddParameter): Name = "Lead Free"; Value = "Lead Free"; VariantName = "[No Variations]"
+Add component (AddParameter): Name = "Lead Pitch"; Value = "2.5mm"; VariantName = "[No Variations]"
+Add component (AddParameter): Name = "Length"; Value = "7.4mm"; VariantName = "[No Variations]"
+Add component (AddParameter): Name = "Max Current Rating"; Value = "3A"; VariantName = "[No Variations]"
+Add component (AddParameter): Name = "Max Operating Temperature"; Value = "85°C"; VariantName = "[No Variations]"
+Add component (AddParameter): Name = "Max Voltage Rating (AC)"; Value = "250V"; VariantName = "[No Variations]"
+Add component (AddParameter): Name = "Max Voltage Rating (DC)"; Value = "250V"; VariantName = "[No Variations]"
+Add component (AddParameter): Name = "Min Operating Temperature"; Value = "-25°C"; VariantName = "[No Variations]"
+Add component (AddParameter): Name = "Mount"; Value = "Through Hole"; VariantName = "[No Variations]"
+Add component (AddParameter): Name = "Number of Contacts"; Value = "2"; VariantName = "[No Variations]"
+Add component (AddParameter): Name = "Number of Positions"; Value = "2"; VariantName = "[No Variations]"
+Add component (AddParameter): Name = "Number of Rows"; Value = "1"; VariantName = "[No Variations]"
+Add component (AddParameter): Name = "Orientation"; Value = "Straight"; VariantName = "[No Variations]"
+Add component (AddParameter): Name = "Packaging"; Value = "Bulk"; VariantName = "[No Variations]"
+Add component (AddParameter): Name = "Pitch"; Value = "2.5mm"; VariantName = "[No Variations]"
+Add component (AddParameter): Name = "REACH SVHC"; Value = "No SVHC"; VariantName = "[No Variations]"
+Add component (AddParameter): Name = "Series"; Value = "XH"; VariantName = "[No Variations]"
+Add component (AddParameter): Name = "Termination"; Value = "Solder"; VariantName = "[No Variations]"
+Add component (AddParameter): Name = "Voltage Rating"; Value = "250V"; VariantName = "[No Variations]"
+Add component (AddParameter): Name = "Voltage Rating (AC)"; Value = "250V"; VariantName = "[No Variations]"
+Add component (AddParameter): Name = "Wire/Cable Gauge"; Value = "22AWG"; VariantName = "[No Variations]"
+Added Component: Designator=JSwitch(FP-B2B-XH-A_LF_SN-MFG)
+Add component (AddParameter): Name = "Color"; Value = "Natural"; VariantName = "[No Variations]"
+Add component (AddParameter): Name = "Connector Type"; Value = "Male Pin"; VariantName = "[No Variations]"
+Add component (AddParameter): Name = "Contact Material"; Value = "Brass"; VariantName = "[No Variations]"
+Add component (AddParameter): Name = "Contact Plating"; Value = "Tin"; VariantName = "[No Variations]"
+Add component (AddParameter): Name = "Contact Resistance"; Value = "20mR"; VariantName = "[No Variations]"
+Add component (AddParameter): Name = "Contact Type"; Value = "Male Pin"; VariantName = "[No Variations]"
+Add component (AddParameter): Name = "Current Rating"; Value = "3A"; VariantName = "[No Variations]"
+Add component (AddParameter): Name = "Depth"; Value = "5.75mm"; VariantName = "[No Variations]"
+Add component (AddParameter): Name = "Fastening Type"; Value = "Detent"; VariantName = "[No Variations]"
+Add component (AddParameter): Name = "Housing Color"; Value = "White"; VariantName = "[No Variations]"
+Add component (AddParameter): Name = "Housing Material"; Value = "Polyamide"; VariantName = "[No Variations]"
+Add component (AddParameter): Name = "Insulation Resistance"; Value = "1GR"; VariantName = "[No Variations]"
+Add component (AddParameter): Name = "Lead Free"; Value = "Lead Free"; VariantName = "[No Variations]"
+Add component (AddParameter): Name = "Lead Pitch"; Value = "2.5mm"; VariantName = "[No Variations]"
+Add component (AddParameter): Name = "Length"; Value = "7.4mm"; VariantName = "[No Variations]"
+Add component (AddParameter): Name = "Max Current Rating"; Value = "3A"; VariantName = "[No Variations]"
+Add component (AddParameter): Name = "Max Operating Temperature"; Value = "85°C"; VariantName = "[No Variations]"
+Add component (AddParameter): Name = "Max Voltage Rating (AC)"; Value = "250V"; VariantName = "[No Variations]"
+Add component (AddParameter): Name = "Max Voltage Rating (DC)"; Value = "250V"; VariantName = "[No Variations]"
+Add component (AddParameter): Name = "Min Operating Temperature"; Value = "-25°C"; VariantName = "[No Variations]"
+Add component (AddParameter): Name = "Mount"; Value = "Through Hole"; VariantName = "[No Variations]"
+Add component (AddParameter): Name = "Number of Contacts"; Value = "2"; VariantName = "[No Variations]"
+Add component (AddParameter): Name = "Number of Positions"; Value = "2"; VariantName = "[No Variations]"
+Add component (AddParameter): Name = "Number of Rows"; Value = "1"; VariantName = "[No Variations]"
+Add component (AddParameter): Name = "Orientation"; Value = "Straight"; VariantName = "[No Variations]"
+Add component (AddParameter): Name = "Packaging"; Value = "Bulk"; VariantName = "[No Variations]"
+Add component (AddParameter): Name = "Pitch"; Value = "2.5mm"; VariantName = "[No Variations]"
+Add component (AddParameter): Name = "REACH SVHC"; Value = "No SVHC"; VariantName = "[No Variations]"
+Add component (AddParameter): Name = "Series"; Value = "XH"; VariantName = "[No Variations]"
+Add component (AddParameter): Name = "Termination"; Value = "Solder"; VariantName = "[No Variations]"
+Add component (AddParameter): Name = "Voltage Rating"; Value = "250V"; VariantName = "[No Variations]"
+Add component (AddParameter): Name = "Voltage Rating (AC)"; Value = "250V"; VariantName = "[No Variations]"
+Add component (AddParameter): Name = "Wire/Cable Gauge"; Value = "22AWG"; VariantName = "[No Variations]"
+Added Component: Designator=switch(Test-Pin-TH)
+Added Component: Designator=TB(TB6612FNG)
+Added Component: Designator=U1(BUCK_MINI_3A)
+Added Component: Designator=U2(XCVR_ESP32-S3-DEVKITC-1-N16R8V)
+Add component (AddParameter): Name = "Check_prices"; Value = "https://www.snapeda.com/parts/ESP32-S3-DEVKITC-1-N16R8V/Espressif+Systems/view-part/?ref=eda"; VariantName = "[No Variations]"
+Add component (AddParameter): Name = "MF"; Value = "Espressif Systems"; VariantName = "[No Variations]"
+Add component (AddParameter): Name = "MP"; Value = "ESP32-S3-DEVKITC-1-N16R8V"; VariantName = "[No Variations]"
+Add component (AddParameter): Name = "Package"; Value = "None"; VariantName = "[No Variations]"
+Add component (AddParameter): Name = "SnapEDA_Link"; Value = "https://www.snapeda.com/parts/ESP32-S3-DEVKITC-1-N16R8V/Espressif+Systems/view-part/?ref=snap"; VariantName = "[No Variations]"
+Add component (AddParameter): Name = "Value"; Value = ""; VariantName = "[No Variations]"
+Added Pin To Net: NetName=3V3 Pin=3V3-1
+Added Pin To Net: NetName=3V3 Pin=J1-4
+Added Pin To Net: NetName=3V3 Pin=J2-4
+Added Pin To Net: NetName=3V3 Pin=TB-7
+Added Pin To Net: NetName=3V3 Pin=U2-J1_1
+Added Pin To Net: NetName=3V3 Pin=U2-J1_2
+Added Net: Name=3V3
+Added Pin To Net: NetName=5V Pin=5V-1
+Added Pin To Net: NetName=5V Pin=C2-2
+Added Pin To Net: NetName=5V Pin=U1-3
+Added Pin To Net: NetName=5V Pin=U1-3
+Added Pin To Net: NetName=5V Pin=U2-J1_21
+Added Net: Name=5V
+Added Pin To Net: NetName=A01 Pin=A01-1
+Added Pin To Net: NetName=A01 Pin=J1-6
+Added Pin To Net: NetName=A01 Pin=TB-5
+Added Net: Name=A01
+Added Pin To Net: NetName=A02 Pin=A02-1
+Added Pin To Net: NetName=A02 Pin=J1-5
+Added Pin To Net: NetName=A02 Pin=TB-4
+Added Net: Name=A02
+Added Pin To Net: NetName=AIN1 Pin=TB-14
+Added Pin To Net: NetName=AIN1 Pin=U2-J1_6
+Added Net: Name=AIN1
+Added Pin To Net: NetName=AIN2 Pin=TB-15
+Added Pin To Net: NetName=AIN2 Pin=U2-J1_5
+Added Net: Name=AIN2
+Added Pin To Net: NetName=B01 Pin=B01-1
+Added Pin To Net: NetName=B01 Pin=J2-5
+Added Pin To Net: NetName=B01 Pin=TB-2
+Added Net: Name=B01
+Added Pin To Net: NetName=B02 Pin=B02-1
+Added Pin To Net: NetName=B02 Pin=J2-6
+Added Pin To Net: NetName=B02 Pin=TB-3
+Added Net: Name=B02
+Added Pin To Net: NetName=BIN1 Pin=TB-12
+Added Pin To Net: NetName=BIN1 Pin=U2-J1_8
+Added Net: Name=BIN1
+Added Pin To Net: NetName=BIN2 Pin=TB-11
+Added Pin To Net: NetName=BIN2 Pin=U2-J1_9
+Added Net: Name=BIN2
+Added Pin To Net: NetName=ENC1_A Pin=J1-2
+Added Pin To Net: NetName=ENC1_A Pin=U2-J1_19
+Added Net: Name=ENC1_A
+Added Pin To Net: NetName=ENC1_B Pin=J1-3
+Added Pin To Net: NetName=ENC1_B Pin=U2-J1_20
+Added Net: Name=ENC1_B
+Added Pin To Net: NetName=ENC2_A Pin=J2-2
+Added Pin To Net: NetName=ENC2_A Pin=U2-J1_17
+Added Net: Name=ENC2_A
+Added Pin To Net: NetName=ENC2_B Pin=J2-3
+Added Pin To Net: NetName=ENC2_B Pin=U2-J1_18
+Added Net: Name=ENC2_B
+Added Pin To Net: NetName=GND Pin=C1-1
+Added Pin To Net: NetName=GND Pin=C2-1
+Added Pin To Net: NetName=GND Pin=GND-1
+Added Pin To Net: NetName=GND Pin=J1-1
+Added Pin To Net: NetName=GND Pin=J2-1
+Added Pin To Net: NetName=GND Pin=J3-2
+Added Pin To Net: NetName=GND Pin=TB-1
+Added Pin To Net: NetName=GND Pin=TB-6
+Added Pin To Net: NetName=GND Pin=TB-9
+Added Pin To Net: NetName=GND Pin=U1-2
+Added Pin To Net: NetName=GND Pin=U1-2
+Added Pin To Net: NetName=GND Pin=U1-4
+Added Pin To Net: NetName=GND Pin=U1-4
+Added Pin To Net: NetName=GND Pin=U2-J1_22
+Added Pin To Net: NetName=GND Pin=U2-J3_1
+Added Pin To Net: NetName=GND Pin=U2-J3_21
+Added Pin To Net: NetName=GND Pin=U2-J3_22
+Added Net: Name=GND
+Added Pin To Net: NetName=PWMA Pin=TB-16
+Added Pin To Net: NetName=PWMA Pin=U2-J1_4
+Added Net: Name=PWMA
+Added Pin To Net: NetName=PWMB Pin=TB-10
+Added Pin To Net: NetName=PWMB Pin=U2-J1_10
+Added Net: Name=PWMB
+Added Pin To Net: NetName=STBY Pin=TB-13
+Added Pin To Net: NetName=STBY Pin=U2-J1_7
+Added Net: Name=STBY
+Added Pin To Net: NetName=VS Pin=C1-2
+Added Pin To Net: NetName=VS Pin=JSwitch-2
+Added Pin To Net: NetName=VS Pin=switch-1
+Added Pin To Net: NetName=VS Pin=TB-8
+Added Pin To Net: NetName=VS Pin=U1-1
+Added Pin To Net: NetName=VS Pin=U1-1
+Added Net: Name=VS
+Added Pin To Net: NetName=VV Pin=11.1V-1
+Added Pin To Net: NetName=VV Pin=J3-1
+Added Pin To Net: NetName=VV Pin=JSwitch-1
+Added Net: Name=VV
+Added Class: Name=main
+Added Rule: Name=Schematic Supply Nets
