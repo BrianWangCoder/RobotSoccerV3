@@ -1,0 +1,6 @@
+{
+  "name": "Robot Soccer - Strategy & Telemetry",
+  "description": "Tactical field telemetry, block-based strategy builder, and live match control station for robot soccer.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
