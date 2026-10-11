@@ -399,7 +399,11 @@ const pointInPolygon = (x: number, y: number, poly: Pt[]) => {
 
 /** Boundary dots + (if closed) every dot enclosed by the drawn outline. ptCols/ptRows = dot counts. */
 const enclosedDots = (path: Pt[], ptCols: number, ptRows: number, closed: boolean) => {
-  const out = new Set<string>(path.map(keyOf));
+  // Rasterise every edge so clicked corners get straight, gap-free borders
+  const out = new Set<string>([keyOf(path[0])]);
+  for (let i = 1; i < path.length; i++) {
+    rasterLine(path[i - 1], path[i]).forEach((p) => out.add(keyOf(p)));
+  }
   if (!closed || path.length < 3) return out;
   rasterLine(path[path.length - 1], path[0]).forEach((p) => out.add(keyOf(p)));
   for (let r = 0; r < ptRows; r++) {
@@ -411,39 +415,84 @@ const enclosedDots = (path: Pt[], ptCols: number, ptRows: number, closed: boolea
 };
 
 /**
- * Turns a set of selected dots into the outline of the actual shape (SVG path in lattice units).
- * Each grid cell is filled when ≥3 of its 4 corner dots are selected (3 → triangle, so diagonal
- * edges stay diagonal). Shared internal edges cancel out, leaving only the true boundary, which is
- * then chained into closed loops. cols/rows = number of cells.
+ * Zone SHAPES are stored as filled "quarters": every grid cell is split by both diagonals into
+ * 4 triangles (0 = top, 1 = right, 2 = bottom, 3 = left). This keeps exactly what you drew:
+ * straight/adjacent edges stay straight, and a diagonal only appears where you drew one.
+ * Keys are "col,row,q". cols/rows = number of cells.
  */
-const zonePathFor = (dots: Set<string>, cols: number, rows: number): string => {
-  const has = (c: number, r: number) => dots.has(`${c},${r}`);
-  const edges = new Map<string, [Pt, Pt]>();
+const qKey = (c: number, r: number, q: number) => `${c},${r},${q}`;
 
+/** Centroid of quarter q of cell (c,r), in lattice units. */
+const quarterCentroid = (c: number, r: number, q: number): [number, number] =>
+  q === 0
+    ? [c + 0.5, r + 1 / 6]
+    : q === 1
+    ? [c + 5 / 6, r + 0.5]
+    : q === 2
+    ? [c + 0.5, r + 5 / 6]
+    : [c + 1 / 6, r + 0.5];
+
+/** Every quarter whose centre lies inside the closed outline. */
+const polygonQuarters = (path: Pt[], cols: number, rows: number): Set<string> => {
+  const out = new Set<string>();
+  if (path.length < 3) return out;
   for (let r = 0; r < rows; r++) {
     for (let c = 0; c < cols; c++) {
-      // Clockwise on screen; filtering keeps the winding consistent for triangles too.
-      const corners: Pt[] = [
-        [c, r],
-        [c + 1, r],
-        [c + 1, r + 1],
-        [c, r + 1],
-      ];
-      const poly = corners.filter(([x, y]) => has(x, y));
-      if (poly.length < 3) continue;
-      for (let i = 0; i < poly.length; i++) {
-        const a = poly[i];
-        const b = poly[(i + 1) % poly.length];
-        const rev = `${keyOf(b)}>${keyOf(a)}`;
-        if (edges.has(rev)) edges.delete(rev);
-        else edges.set(`${keyOf(a)}>${keyOf(b)}`, [a, b]);
+      for (let q = 0; q < 4; q++) {
+        const [x, y] = quarterCentroid(c, r, q);
+        if (pointInPolygon(x, y, path)) out.add(qKey(c, r, q));
       }
     }
   }
+  return out;
+};
+
+/** Legacy zones (saved before shapes were stored) — rebuild a shape from their dots. */
+const quartersFromDots = (dots: Set<string>, cols: number, rows: number): Set<string> => {
+  const out = new Set<string>();
+  const has = (c: number, r: number) => dots.has(`${c},${r}`);
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const tl = has(c, r), tr = has(c + 1, r), br = has(c + 1, r + 1), bl = has(c, r + 1);
+      const n = +tl + +tr + +br + +bl;
+      let qs: number[] = [];
+      if (n === 4) qs = [0, 1, 2, 3];
+      else if (n === 3) qs = !tl ? [1, 2] : !tr ? [2, 3] : !br ? [3, 0] : [0, 1];
+      qs.forEach((q) => out.add(qKey(c, r, q)));
+    }
+  }
+  return out;
+};
+
+/**
+ * Outline of a set of quarters as an SVG path (lattice units). Shared internal edges cancel,
+ * the remaining boundary edges are chained into closed loops and collinear points dropped.
+ */
+const quartersPath = (quarters: Set<string>): string => {
+  // Work in doubled coordinates so cell centres are integers
+  const edges = new Map<string, [Pt, Pt]>();
+  const k2 = ([x, y]: Pt) => `${x},${y}`;
+  quarters.forEach((key) => {
+    const [c, r, q] = key.split(',').map(Number);
+    const tl: Pt = [2 * c, 2 * r];
+    const tr: Pt = [2 * c + 2, 2 * r];
+    const br: Pt = [2 * c + 2, 2 * r + 2];
+    const bl: Pt = [2 * c, 2 * r + 2];
+    const ctr: Pt = [2 * c + 1, 2 * r + 1];
+    const tri: Pt[] =
+      q === 0 ? [tl, tr, ctr] : q === 1 ? [tr, br, ctr] : q === 2 ? [br, bl, ctr] : [bl, tl, ctr];
+    for (let i = 0; i < 3; i++) {
+      const a = tri[i];
+      const b = tri[(i + 1) % 3];
+      const rev = `${k2(b)}>${k2(a)}`;
+      if (edges.has(rev)) edges.delete(rev);
+      else edges.set(`${k2(a)}>${k2(b)}`, [a, b]);
+    }
+  });
 
   const out = new Map<string, Pt[]>();
   edges.forEach(([a, b]) => {
-    const k = keyOf(a);
+    const k = k2(a);
     if (!out.has(k)) out.set(k, []);
     out.get(k)!.push(b);
   });
@@ -458,19 +507,48 @@ const zonePathFor = (dots: Set<string>, cols: number, rows: number): string => {
   let d = '';
   while (out.size) {
     const startKey = out.keys().next().value as string;
-    const [sc, sr] = startKey.split(',').map(Number);
-    d += `M${sc} ${sr}`;
+    const loop: Pt[] = [startKey.split(',').map(Number) as Pt];
     let cur = startKey;
-    for (let guard = 0; guard < 100000; guard++) {
+    for (let guard = 0; guard < 200000; guard++) {
       const nxt = take(cur);
       if (!nxt) break;
-      cur = keyOf(nxt);
+      cur = k2(nxt);
       if (cur === startKey) break;
-      d += `L${nxt[0]} ${nxt[1]}`;
+      loop.push(nxt);
     }
-    d += 'Z';
+    // Drop collinear points so straight edges are single segments
+    const pts = loop.filter((p, i) => {
+      const a = loop[(i - 1 + loop.length) % loop.length];
+      const b = loop[(i + 1) % loop.length];
+      return (p[0] - a[0]) * (b[1] - p[1]) !== (p[1] - a[1]) * (b[0] - p[0]);
+    });
+    if (pts.length < 3) continue;
+    d += pts.map(([x, y], i) => `${i ? 'L' : 'M'}${x / 2} ${y / 2}`).join('') + 'Z';
   }
   return d;
+};
+
+/** Grid-following line between two dots: only horizontal/vertical steps (no diagonal cuts). */
+const rasterLine4 = (a: Pt, b: Pt): Pt[] => {
+  const pts: Pt[] = [a];
+  let [x, y] = a;
+  const dx = Math.abs(b[0] - x);
+  const dy = Math.abs(b[1] - y);
+  const sx = b[0] > x ? 1 : -1;
+  const sy = b[1] > y ? 1 : -1;
+  let ix = 0;
+  let iy = 0;
+  while (ix < dx || iy < dy) {
+    if ((0.5 + ix) / dx < (0.5 + iy) / dy) {
+      x += sx;
+      ix++;
+    } else {
+      y += sy;
+      iy++;
+    }
+    pts.push([x, y]);
+  }
+  return pts;
 };
 
 /* ------------------------------------------------------------------ */
@@ -500,6 +578,13 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
     strategy.situations.find((s) => s.id === situationId)?.name ?? activeSituation.name;
 
   type Situation = StrategyConfig['situations'][number];
+  /** Situations may carry the drawn shape as quarter-cells (see quartersPath). */
+  type ZoneSituation = Situation & { selectedQuarters?: string[] };
+
+  const quartersOf = (sit: Situation): Set<string> => {
+    const q = (sit as ZoneSituation).selectedQuarters;
+    return q ? new Set(q) : quartersFromDots(new Set(sit.selectedDots), gridDims.cols, gridDims.rows);
+  };
 
   const colorFor = (situationId: string) => {
     const i = strategy.situations.findIndex((s) => s.id === situationId);
@@ -525,6 +610,7 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
       name: `Situation ${n}`,
       priority: 'Medium Priority',
       selectedDots: [],
+      selectedQuarters: [],
       minCol: 0,
       maxCol: 0,
       minRow: 0,
@@ -800,7 +886,7 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
   const [drawPath, setDrawPath] = useState<Pt[] | null>(null);
   const [drawClosed, setDrawClosed] = useState(false);
 
-  const commitDots = (dots: string[]) => {
+  const commitDots = (dots: string[], quarters?: Set<string>) => {
     const cols = dots.map((d) => parseInt(d.split(',')[0], 10));
     const rows = dots.map((d) => parseInt(d.split(',')[1], 10));
     onUpdateStrategy({
@@ -810,6 +896,7 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
           ? {
               ...sit,
               selectedDots: dots,
+              ...(quarters ? { selectedQuarters: [...quarters] } : {}),
               minCol: cols.length ? Math.min(...cols) : 0,
               maxCol: cols.length ? Math.max(...cols) : 0,
               minRow: rows.length ? Math.min(...rows) : 0,
@@ -826,8 +913,11 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
     commitDots(current.includes(key) ? current.filter((d) => d !== key) : [...current, key]);
   };
 
-  const mergeZone = (drawn: Set<string>, mode: ZoneMode): Set<string> => {
-    const current = new Set(activeSituation.selectedDots);
+  const mergeZone = (
+    drawn: Set<string>,
+    mode: ZoneMode,
+    current: Set<string> = new Set(activeSituation.selectedDots)
+  ): Set<string> => {
     if (mode === 'replace') return drawn;
     if (mode === 'add') return new Set([...current, ...drawn]);
     return new Set([...current].filter((k) => !drawn.has(k)));
@@ -846,67 +936,188 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
     ];
   };
 
-  const handleGridPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (e.button !== 0) return;
-    const d = dotAt(e);
-    if (!d) return;
-    e.currentTarget.setPointerCapture(e.pointerId);
-    zoneModeRef.current = e.altKey ? 'erase' : e.shiftKey ? 'add' : 'replace';
-    pathRef.current = [d];
+  /*
+   * One outline is built at a time, and you can mix both ways of making it:
+   *  - DRAG: sketch freehand. A drag on its own commits when you let go.
+   *  - CLICK: each click places a corner (straight edges between corners). The outline stays
+   *    open until you click the first corner again, double-click, press Enter or hit FINISH.
+   *  - Once corners are placed, dragging continues the same outline instead of starting a new one.
+   * Ctrl/Cmd-click toggles a single dot; Backspace undoes the last point; Esc cancels.
+   */
+  const cornerModeRef = useRef(false); // outline contains clicked corners → stays open after release
+  const downRef = useRef<{ moved: boolean } | null>(null);
+  const [pending, setPending] = useState(false);
+  const [hoverDot, setHoverDot] = useState<Pt | null>(null);
+
+  const setPath = (p: Pt[] | null) => {
+    pathRef.current = p;
+    setDrawPath(p);
+  };
+
+  const cancelOutline = () => {
+    pathRef.current = null;
+    cornerModeRef.current = false;
+    downRef.current = null;
     closedRef.current = false;
-    setDrawPath([d]);
+    setDrawPath(null);
+    setPending(false);
     setDrawClosed(false);
   };
 
-  const handleGridPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
-    const path = pathRef.current;
-    if (!path || closedRef.current) return;
-    const d = dotAt(e);
-    if (!d) return;
-    const last = path[path.length - 1];
-    if (samePt(d, last)) return;
+  /** Fills the outline into the active zone (≥3 points closes it; fewer just adds the dots). */
+  const finishOutline = (path: Pt[] | null = pathRef.current) => {
+    if (!path || !path.length) return cancelOutline();
+    const drawn = enclosedDots(path, ptCols, ptRows, path.length >= 3);
+    const drawnQ = polygonQuarters(path, gridDims.cols, gridDims.rows);
+    const mode = zoneModeRef.current;
+    const quarters = mergeZone(drawnQ, mode, quartersOf(activeSituation));
+    cancelOutline();
+    commitDots([...mergeZone(drawn, mode)], quarters);
+  };
 
+  // Keyboard + zone/resolution changes go through refs so listeners never see stale state
+  const finishRef = useRef(finishOutline);
+  finishRef.current = finishOutline;
+  const cancelRef = useRef(cancelOutline);
+  cancelRef.current = cancelOutline;
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const path = pathRef.current;
+      if (!path) return;
+      if ((e.target as HTMLElement)?.closest?.('input, select, textarea')) return;
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        finishRef.current();
+      } else if (e.key === 'Escape') {
+        cancelRef.current();
+      } else if (e.key === 'Backspace' || e.key === 'Delete') {
+        e.preventDefault();
+        if (path.length <= 1) cancelRef.current();
+        else setPath(path.slice(0, -1));
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
+  // Switching zone or resolution abandons a half-drawn outline
+  useEffect(() => {
+    cancelRef.current();
+  }, [activeSituation.id, strategy.resolution]);
+
+  /** Extends the outline toward d; returns true if it looped back onto the start (shape closed). */
+  const extendTo = (d: Pt): boolean => {
+    const path = pathRef.current;
+    if (!path) return false;
+    const last = path[path.length - 1];
+    if (samePt(d, last)) return false;
     const next = [...path];
-    for (const p of rasterLine(last, d).slice(1)) {
+    for (const p of rasterLine4(last, d).slice(1)) {
       if (samePt(p, next[0])) {
         if (next.length >= 3) {
-          closedRef.current = true; // loop enclosed → zone done
-          break;
+          finishOutline(next);
+          return true;
         }
         continue; // too short to be a shape, ignore touching start
       }
       next.push(p);
     }
-    pathRef.current = next;
-    setDrawPath(next);
-    setDrawClosed(closedRef.current);
+    setPath(next);
+    return false;
+  };
+
+  const handleGridPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0) return;
+    const d = dotAt(e);
+    if (!d) return;
+
+    // Ctrl/Cmd-click: toggle a single dot without touching the outline
+    if ((e.ctrlKey || e.metaKey) && !pathRef.current) {
+      toggleDot(d[0], d[1]);
+      return;
+    }
+
+    e.currentTarget.setPointerCapture(e.pointerId);
+    downRef.current = { moved: false };
+
+    const path = pathRef.current;
+    if (!path) {
+      zoneModeRef.current = e.altKey ? 'erase' : e.shiftKey ? 'add' : 'replace';
+      setPath([d]);
+      return;
+    }
+
+    // Clicking the first corner closes the shape
+    if (path.length >= 3 && samePt(d, path[0])) {
+      downRef.current = null;
+      finishOutline(path);
+      return;
+    }
+    // Otherwise this press adds a corner (straight edge from the previous point)
+    if (!samePt(d, path[path.length - 1])) setPath([...path, d]);
+  };
+
+  const handleGridPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    const d = dotAt(e);
+    if (!d) return;
+    if (!hoverDot || !samePt(hoverDot, d)) setHoverDot(d);
+    if (!downRef.current || !pathRef.current) return;
+    const last = pathRef.current[pathRef.current.length - 1];
+    if (samePt(d, last)) return;
+    downRef.current.moved = true;
+    if (extendTo(d)) downRef.current = null; // closed by looping back to the start
   };
 
   const handleGridPointerUp = () => {
-    const path = pathRef.current;
-    if (!path) return;
-    pathRef.current = null;
-    setDrawPath(null);
-    setDrawClosed(false);
+    const down = downRef.current;
+    downRef.current = null;
+    if (!down || !pathRef.current) return;
 
-    if (path.length === 1) {
-      toggleDot(path[0][0], path[0][1]); // plain click
-      return;
+    if (cornerModeRef.current) return; // corner outline stays open until closed explicitly
+
+    if (down.moved) {
+      finishOutline(); // plain freehand drag → commit on release
+    } else {
+      cornerModeRef.current = true; // first click → start placing corners
+      setPending(true);
     }
-    // Auto-close on release if it's at least a triangle
-    const closed = closedRef.current || path.length >= 3;
-    const drawn = enclosedDots(path, ptCols, ptRows, closed);
-    commitDots([...mergeZone(drawn, zoneModeRef.current)]);
   };
 
-  // Live preview while drawing
-  const previewDots = drawPath
+  const handleGridPointerCancel = () => {
+    downRef.current = null;
+    if (!cornerModeRef.current) cancelOutline();
+  };
+
+  const handleGridDoubleClick = () => {
+    if (cornerModeRef.current && pathRef.current && pathRef.current.length >= 3) finishOutline();
+  };
+
+  // Live preview: while placing corners, include a rubber-band edge to the hovered dot
+  const previewPath =
+    drawPath &&
+    pending &&
+    hoverDot &&
+    !downRef.current &&
+    !samePt(hoverDot, drawPath[drawPath.length - 1])
+      ? [...drawPath, hoverDot]
+      : drawPath;
+  const previewDots = previewPath
     ? mergeZone(
-        enclosedDots(drawPath, ptCols, ptRows, drawClosed || drawPath.length >= 3),
+        enclosedDots(previewPath, ptCols, ptRows, previewPath.length >= 3),
         zoneModeRef.current
       )
     : null;
+  const previewQuarters = previewPath
+    ? mergeZone(
+        polygonQuarters(previewPath, gridDims.cols, gridDims.rows),
+        zoneModeRef.current,
+        quartersOf(activeSituation)
+      )
+    : null;
   const pathKeys = new Set(drawPath?.map(keyOf) ?? []);
+  const canCloseOnStart =
+    pending && !!drawPath && drawPath.length >= 3 && !!hoverDot && samePt(hoverDot, drawPath[0]);
 
   // Real zone outlines (traced shapes) for every zone; the active one uses the live preview
   const shownDots = previewDots ?? new Set(activeSituation.selectedDots);
@@ -916,11 +1127,7 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
       sit,
       isActive,
       color: colorFor(sit.id),
-      path: zonePathFor(
-        isActive ? shownDots : new Set(sit.selectedDots),
-        gridDims.cols,
-        gridDims.rows
-      ),
+      path: quartersPath(isActive && previewQuarters ? previewQuarters : quartersOf(sit)),
     };
   });
   // Inactive zones draw first so the active zone sits on top
@@ -1266,8 +1473,12 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
               onPointerDown={handleGridPointerDown}
               onPointerMove={handleGridPointerMove}
               onPointerUp={handleGridPointerUp}
-              onPointerCancel={handleGridPointerUp}
-              className="absolute inset-0 z-10 cursor-crosshair touch-none"
+              onPointerCancel={handleGridPointerCancel}
+              onPointerLeave={() => setHoverDot(null)}
+              onDoubleClick={handleGridDoubleClick}
+              className={`absolute inset-0 z-10 touch-none ${
+                canCloseOnStart ? 'cursor-pointer' : 'cursor-crosshair'
+              }`}
             >
               {/* Exact field rectangle: dot (0,0) = top-left corner, (cols,rows) = bottom-right */}
               <div
@@ -1348,36 +1559,68 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
                 )}
 
                 {/* Live outline while drawing */}
-                {drawPath && drawPath.length > 1 && (
+                {drawPath && (
                   <svg
                     viewBox={`0 0 ${gridDims.cols} ${gridDims.rows}`}
                     preserveAspectRatio="none"
                     className="absolute inset-0 w-full h-full overflow-visible pointer-events-none"
                   >
-                    <polyline
-                      points={drawPath.map(([c, r]) => `${c},${r}`).join(' ')}
-                      fill="none"
-                      stroke="#ffffff"
-                      strokeOpacity={0.85}
-                      strokeWidth={1.5}
-                      strokeLinejoin="round"
-                      strokeLinecap="round"
-                      vectorEffect="non-scaling-stroke"
-                    />
-                    {!drawClosed && drawPath.length >= 3 && (
+                    {drawPath.length > 1 && (
+                      <polyline
+                        points={drawPath.map(([c, r]) => `${c},${r}`).join(' ')}
+                        fill="none"
+                        stroke="#ffffff"
+                        strokeOpacity={0.85}
+                        strokeWidth={1.5}
+                        strokeLinejoin="round"
+                        strokeLinecap="round"
+                        vectorEffect="non-scaling-stroke"
+                      />
+                    )}
+                    {/* Rubber-band edge from the last corner to the hovered dot */}
+                    {previewPath !== drawPath && hoverDot && (
                       <line
                         x1={drawPath[drawPath.length - 1][0]}
                         y1={drawPath[drawPath.length - 1][1]}
+                        x2={hoverDot[0]}
+                        y2={hoverDot[1]}
+                        stroke="#ffffff"
+                        strokeOpacity={0.7}
+                        strokeWidth={1.5}
+                        strokeDasharray="5 3"
+                        vectorEffect="non-scaling-stroke"
+                      />
+                    )}
+                    {/* Dashed closing edge back to the start */}
+                    {previewPath && previewPath.length >= 3 && !canCloseOnStart && (
+                      <line
+                        x1={previewPath[previewPath.length - 1][0]}
+                        y1={previewPath[previewPath.length - 1][1]}
                         x2={drawPath[0][0]}
                         y2={drawPath[0][1]}
                         stroke="#ffffff"
-                        strokeOpacity={0.4}
+                        strokeOpacity={0.3}
                         strokeWidth={1.5}
-                        strokeDasharray="4 4"
+                        strokeDasharray="3 4"
                         vectorEffect="non-scaling-stroke"
                       />
                     )}
                   </svg>
+                )}
+
+                {/* Start-corner marker: click it to close the shape */}
+                {pending && drawPath && (
+                  <div
+                    className={`absolute pointer-events-none rounded-full border-2 -translate-x-1/2 -translate-y-1/2 transition-all ${
+                      canCloseOnStart
+                        ? 'w-5 h-5 border-[#3DD68C] bg-[#3DD68C]/25'
+                        : 'w-3.5 h-3.5 border-white/80'
+                    }`}
+                    style={{
+                      left: `${(drawPath[0][0] / gridDims.cols) * 100}%`,
+                      top: `${(drawPath[0][1] / gridDims.rows) * 100}%`,
+                    }}
+                  />
                 )}
 
                 {/* Zone labels anchored at each shape's top-left — click one to select that zone */}
@@ -1437,6 +1680,31 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
               </span>
             </div>
           </div>
+
+          {/* Outline-in-progress bar (corner mode) */}
+          {pending && drawPath && (
+            <div className="mt-2 flex items-center justify-between gap-2 px-2.5 py-1.5 bg-[#0F1115] border border-[#2D3139] text-[10px] font-mono text-[#8E95A5]">
+              <span>
+                <span className="text-white font-bold">{drawPath.length}</span> point
+                {drawPath.length === 1 ? '' : 's'} · click start / double-click / Enter to close
+              </span>
+              <div className="flex items-center gap-1.5 shrink-0">
+                <button
+                  onClick={() => finishOutline()}
+                  disabled={drawPath.length < 3}
+                  className="px-2 py-0.5 bg-[#3DD68C] text-[#111317] font-bold uppercase disabled:opacity-40 cursor-pointer disabled:cursor-not-allowed"
+                >
+                  Finish
+                </button>
+                <button
+                  onClick={() => cancelOutline()}
+                  className="px-2 py-0.5 border border-[#2D3139] hover:border-red-500/60 hover:text-red-400 font-bold uppercase cursor-pointer"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
 
           {/* Zone list */}
           <div className="mt-4">
@@ -1557,10 +1825,13 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
             <div className="p-3 bg-[#1e2024] border border-[#2D3139] flex items-start gap-2 text-[11px] text-[#8E95A5] leading-relaxed">
               <Info className="w-4 h-4 text-[#fabc4d] shrink-0 mt-0.5" />
               <span>
-                <strong className="text-white">How to use:</strong> Click dots to toggle them, or
-                drag to trace the outline of{' '}
-                <span className="text-[#fabc4d] font-bold">{activeSituation.name}</span> (hold
-                Shift to add, Alt to erase). Drag blocks from the palette into a robot stack, drag
+                <strong className="text-white">How to use:</strong> Drag to sketch{' '}
+                <span className="font-bold" style={{ color: activeColor }}>
+                  {activeSituation.name}
+                </span>
+                , or click dots to place corners and click the first one again to close. You can
+                mix both in one shape. Shift = add, Alt = erase, Ctrl-click = toggle one dot,
+                Backspace = undo point, Esc = cancel. Drag blocks from the palette into a robot stack, drag
                 them around to reorder, and drop them back on the palette to delete.
               </span>
             </div>
