@@ -1,398 +1,193 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   Play,
   Pause,
   RotateCcw,
-  FastForward,
-  Activity,
-  Layers,
-  Bot,
-  Zap,
-  Target,
-  ChevronRight,
-  Shield,
   Navigation,
+  Shield,
+  Zap,
+  Bot,
+  Cpu,
+  Trophy,
 } from 'lucide-react';
 import { StrategyConfig } from '../types/strategy';
+import {
+  FIELD,
+  SimWorld,
+  createWorld,
+  resetPositions,
+  step,
+  routineFor,
+} from '../sim/engine';
+import {
+  gridDimsFor,
+  quartersOfSituation,
+  quartersPath,
+  zoneColor,
+} from '../utils/zones';
 
 interface SimulationViewProps {
   strategy: StrategyConfig;
+  /** Jump back to the Strategy Builder. */
+  onEditStrategy?: () => void;
 }
 
-interface SimBot {
-  id: number;
-  team: 'FRIENDLY' | 'OPPONENT';
-  x: number; // field coords: -450 to 450
-  y: number; // field coords: -300 to 300
-  vx: number;
-  vy: number;
-  angle: number;
-  targetX: number;
-  targetY: number;
-  activeBlockIndex: number;
-  status: 'ACTIVE' | 'IDLE';
-}
+type Scenario = 'Free Match' | 'Corner Kick Defense' | 'Penalty Shootout' | 'Attack Build-up';
 
-interface SimBall {
-  x: number;
-  y: number;
-  vx: number;
-  vy: number;
-}
+const SCENARIOS: Record<Scenario, { ball: [number, number]; vel?: [number, number] }> = {
+  'Free Match': { ball: [0, 0] },
+  'Corner Kick Defense': { ball: [-4000, -2600], vel: [600, 1500] },
+  'Penalty Shootout': { ball: [-3200, 0], vel: [-1800, 300] },
+  'Attack Build-up': { ball: [-1500, 600] },
+};
 
-export const SimulationView: React.FC<SimulationViewProps> = ({ strategy }) => {
-  const [isRunning, setIsRunning] = useState<boolean>(true);
-  const [simSpeed, setSimSpeed] = useState<number>(1);
-  const [activeScenario, setActiveScenario] = useState<string>('Free Match');
-  const [showZones, setShowZones] = useState<boolean>(true);
-  const [showVectors, setShowVectors] = useState<boolean>(true);
+const SIM_DT = 1 / 120; // fixed physics step (s)
 
-  // Ball state in mm (-4500 to 4500, -3000 to 3000)
-  const [ball, setBall] = useState<SimBall>({
-    x: 0,
-    y: 0,
-    vx: 120,
-    vy: 80,
-  });
+/** mm → % of the drawing (viewBox spans ±outerX, ±outerY). */
+const pctX = (x: number) => ((x + FIELD.outerX) / (2 * FIELD.outerX)) * 100;
+const pctY = (y: number) => ((y + FIELD.outerY) / (2 * FIELD.outerY)) * 100;
 
-  // Friendly Bots (1..5)
-  const [bots, setBots] = useState<SimBot[]>([
-    {
-      id: 1,
-      team: 'FRIENDLY',
-      x: -1200,
-      y: 0,
-      vx: 0,
-      vy: 0,
-      angle: 0,
-      targetX: 0,
-      targetY: 0,
-      activeBlockIndex: 0,
-      status: 'ACTIVE',
-    },
-    {
-      id: 2,
-      team: 'FRIENDLY',
-      x: -2400,
-      y: -800,
-      vx: 0,
-      vy: 0,
-      angle: 0,
-      targetX: -2400,
-      targetY: -800,
-      activeBlockIndex: 0,
-      status: 'ACTIVE',
-    },
-    {
-      id: 3,
-      team: 'FRIENDLY',
-      x: -4100,
-      y: 0,
-      vx: 0,
-      vy: 0,
-      angle: 0,
-      targetX: -4100,
-      targetY: 0,
-      activeBlockIndex: 0,
-      status: 'ACTIVE',
-    },
-    {
-      id: 4,
-      team: 'FRIENDLY',
-      x: -2000,
-      y: 900,
-      vx: 0,
-      vy: 0,
-      angle: 0,
-      targetX: -2000,
-      targetY: 900,
-      activeBlockIndex: 0,
-      status: 'ACTIVE',
-    },
-    {
-      id: 5,
-      team: 'FRIENDLY',
-      x: -4200,
-      y: -2200,
-      vx: 0,
-      vy: 0,
-      angle: 0,
-      targetX: -4200,
-      targetY: -2200,
-      activeBlockIndex: 0,
-      status: 'IDLE',
-    },
-  ]);
+// The zone lattice spans the field lines (±halfX, ±halfY)
+const ZONE_LEFT = pctX(-FIELD.halfX);
+const ZONE_TOP = pctY(-FIELD.halfY);
+const ZONE_W = pctX(FIELD.halfX) - ZONE_LEFT;
+const ZONE_H = pctY(FIELD.halfY) - ZONE_TOP;
 
-  // Opponent Bots (B1..B5)
-  const [opponents, setOpponents] = useState<SimBot[]>([
-    {
-      id: 101,
-      team: 'OPPONENT',
-      x: 1200,
-      y: 400,
-      vx: 0,
-      vy: 0,
-      angle: 180,
-      targetX: 0,
-      targetY: 0,
-      activeBlockIndex: 0,
-      status: 'ACTIVE',
-    },
-    {
-      id: 102,
-      team: 'OPPONENT',
-      x: 2200,
-      y: -700,
-      vx: 0,
-      vy: 0,
-      angle: 180,
-      targetX: 0,
-      targetY: 0,
-      activeBlockIndex: 0,
-      status: 'ACTIVE',
-    },
-    {
-      id: 103,
-      team: 'OPPONENT',
-      x: 4100,
-      y: 0,
-      vx: 0,
-      vy: 0,
-      angle: 180,
-      targetX: 4100,
-      targetY: 0,
-      activeBlockIndex: 0,
-      status: 'ACTIVE',
-    },
-    {
-      id: 104,
-      team: 'OPPONENT',
-      x: 1800,
-      y: 900,
-      vx: 0,
-      vy: 0,
-      angle: 180,
-      targetX: 0,
-      targetY: 0,
-      activeBlockIndex: 0,
-      status: 'ACTIVE',
-    },
-  ]);
+export const SimulationView: React.FC<SimulationViewProps> = ({ strategy, onEditStrategy }) => {
+  const [isRunning, setIsRunning] = useState(true);
+  const [simSpeed, setSimSpeed] = useState(1);
+  const [scenario, setScenario] = useState<Scenario>('Free Match');
+  const [showZones, setShowZones] = useState(true);
+  const [showVectors, setShowVectors] = useState(true);
+  const [opponentsOn, setOpponentsOn] = useState(true);
+  const [, setFrame] = useState(0); // re-render trigger
+
+  const worldRef = useRef<SimWorld>(createWorld());
+  const strategyRef = useRef(strategy);
+  strategyRef.current = strategy;
+  const runningRef = useRef(isRunning);
+  runningRef.current = isRunning;
+  const speedRef = useRef(simSpeed);
+  speedRef.current = simSpeed;
 
   const fieldRef = useRef<HTMLDivElement>(null);
-  const isDragging = useRef<boolean>(false);
+  const dragRef = useRef<{ x: number; y: number; t: number; vx: number; vy: number } | null>(null);
 
-  // Simulation physics step
+  const w = worldRef.current;
+  w.opponentsEnabled = opponentsOn;
+
+  /* ---------------- main loop ---------------- */
   useEffect(() => {
-    if (!isRunning) return;
-
-    const dt = 0.03 * simSpeed;
-    const timer = setInterval(() => {
-      // 1. Update ball position with friction
-      setBall((prev) => {
-        let nx = prev.x + prev.vx * dt * 20;
-        let ny = prev.y + prev.vy * dt * 20;
-        let nvx = prev.vx * 0.99;
-        let nvy = prev.vy * 0.99;
-
-        // Bounce off field boundaries
-        if (nx > 4200) {
-          nx = 4200;
-          nvx = -nvx * 0.7;
+    let raf = 0;
+    let last = performance.now();
+    let acc = 0;
+    const loop = (now: number) => {
+      const elapsed = Math.min(0.1, (now - last) / 1000);
+      last = now;
+      if (runningRef.current) {
+        acc += elapsed * speedRef.current;
+        while (acc >= SIM_DT) {
+          if (!dragRef.current) step(worldRef.current, strategyRef.current, SIM_DT);
+          acc -= SIM_DT;
         }
-        if (nx < -4200) {
-          nx = -4200;
-          nvx = -nvx * 0.7;
-        }
-        if (ny > 2800) {
-          ny = 2800;
-          nvy = -nvy * 0.7;
-        }
-        if (ny < -2800) {
-          ny = -2800;
-          nvy = -nvy * 0.7;
-        }
+      }
+      setFrame((f) => (f + 1) % 1_000_000);
+      raf = requestAnimationFrame(loop);
+    };
+    raf = requestAnimationFrame(loop);
+    return () => cancelAnimationFrame(raf);
+  }, []);
 
-        return { x: nx, y: ny, vx: nvx, vy: nvy };
-      });
-
-      // 2. Update friendly bots based on active strategy routines
-      setBots((prevBots) =>
-        prevBots.map((bot) => {
-          if (bot.status === 'IDLE') return bot;
-
-          let tx = bot.targetX;
-          let ty = bot.targetY;
-
-          // GoalKeeper: track ball Y on goal line
-          if (bot.id === 3) {
-            tx = -4100;
-            ty = Math.max(-800, Math.min(800, ball.y * 0.8));
-          } else if (bot.id === 1) {
-            // Striker tracks ball and kicks
-            const distToBall = Math.hypot(ball.x - bot.x, ball.y - bot.y);
-            if (distToBall < 180) {
-              // Kick ball towards opponent goal (4500, 0)
-              setBall((b) => ({
-                ...b,
-                vx: 380 + Math.random() * 50,
-                vy: (Math.random() - 0.5) * 120,
-              }));
-            }
-            tx = ball.x - 120;
-            ty = ball.y;
-          } else if (bot.id === 2) {
-            // Defender tracks mid-pitch shadow
-            tx = Math.min(-1500, ball.x - 800);
-            ty = ball.y * 0.5;
-          } else if (bot.id === 4) {
-            // Support flanker
-            tx = ball.x - 500;
-            ty = ball.y > 0 ? -1200 : 1200;
-          }
-
-          const dx = tx - bot.x;
-          const dy = ty - bot.y;
-          const speed = 1200; // mm/s
-          const dist = Math.hypot(dx, dy);
-
-          let vx = 0;
-          let vy = 0;
-          if (dist > 50) {
-            vx = (dx / dist) * Math.min(dist * 3, speed);
-            vy = (dy / dist) * Math.min(dist * 3, speed);
-          }
-
-          const nx = bot.x + vx * dt;
-          const ny = bot.y + vy * dt;
-          const angle = (Math.atan2(dy, dx) * 180) / Math.PI;
-
-          return {
-            ...bot,
-            x: nx,
-            y: ny,
-            vx,
-            vy,
-            angle: Math.round(angle),
-            targetX: tx,
-            targetY: ty,
-          };
-        })
-      );
-
-      // 3. Update opponent bots
-      setOpponents((prevOpps) =>
-        prevOpps.map((opp) => {
-          let tx = opp.x;
-          let ty = opp.y;
-          if (opp.id === 101) {
-            // Opponent striker
-            tx = ball.x + 120;
-            ty = ball.y;
-            const dist = Math.hypot(ball.x - opp.x, ball.y - opp.y);
-            if (dist < 180) {
-              setBall((b) => ({
-                ...b,
-                vx: -350 - Math.random() * 50,
-                vy: (Math.random() - 0.5) * 120,
-              }));
-            }
-          } else if (opp.id === 103) {
-            // Opponent keeper
-            tx = 4100;
-            ty = Math.max(-800, Math.min(800, ball.y * 0.8));
-          } else {
-            tx = 1500;
-            ty = opp.id === 102 ? -800 : 800;
-          }
-
-          const dx = tx - opp.x;
-          const dy = ty - opp.y;
-          const dist = Math.hypot(dx, dy);
-          let vx = 0;
-          let vy = 0;
-          if (dist > 50) {
-            vx = (dx / dist) * Math.min(dist * 2.5, 1000);
-            vy = (dy / dist) * Math.min(dist * 2.5, 1000);
-          }
-
-          return {
-            ...opp,
-            x: opp.x + vx * dt,
-            y: opp.y + vy * dt,
-            angle: Math.round((Math.atan2(dy, dx) * 180) / Math.PI),
-          };
-        })
-      );
-    }, 30);
-
-    return () => clearInterval(timer);
-  }, [isRunning, simSpeed, ball.x, ball.y]);
-
-  const handleResetPositions = () => {
-    setBall({ x: 0, y: 0, vx: 0, vy: 0 });
-    setBots((b) =>
-      b.map((bot) => ({
-        ...bot,
-        x: bot.id === 3 ? -4100 : bot.id === 1 ? -1200 : bot.id === 2 ? -2400 : -2000,
-        y: bot.id === 3 ? 0 : bot.id === 1 ? 0 : bot.id === 2 ? -800 : 900,
-      }))
-    );
-  };
-
-  const handleScenarioChange = (scenario: string) => {
-    setActiveScenario(scenario);
-    if (scenario === 'Corner Kick Defense') {
-      setBall({ x: -4000, y: 2600, vx: 0, vy: 0 });
-    } else if (scenario === 'Penalty Shootout') {
-      setBall({ x: -2800, y: 0, vx: 0, vy: 0 });
-    } else {
-      setBall({ x: 0, y: 0, vx: 100, vy: 50 });
+  /* ---------------- controls ---------------- */
+  const startScenario = (s: Scenario) => {
+    setScenario(s);
+    const sc = SCENARIOS[s];
+    resetPositions(worldRef.current, sc.ball);
+    if (sc.vel) {
+      worldRef.current.ball.vx = sc.vel[0];
+      worldRef.current.ball.vy = sc.vel[1];
     }
   };
 
-  // Dragging ball on simulation field
-  const handleSimFieldMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
-    isDragging.current = true;
-    updateSimBallFromMouse(e);
+  const handleRestart = () => {
+    const fresh = createWorld();
+    fresh.opponentsEnabled = opponentsOn;
+    worldRef.current = fresh;
+    const sc = SCENARIOS[scenario];
+    resetPositions(fresh, sc.ball);
+    if (sc.vel) {
+      fresh.ball.vx = sc.vel[0];
+      fresh.ball.vy = sc.vel[1];
+    }
   };
 
-  const handleSimFieldMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (!isDragging.current) return;
-    updateSimBallFromMouse(e);
+  /* ---------------- ball drag / throw ---------------- */
+  const toMm = (e: React.PointerEvent) => {
+    const r = fieldRef.current!.getBoundingClientRect();
+    const x = ((e.clientX - r.left) / r.width) * 2 * FIELD.outerX - FIELD.outerX;
+    const y = ((e.clientY - r.top) / r.height) * 2 * FIELD.outerY - FIELD.outerY;
+    return [
+      Math.max(-FIELD.halfX, Math.min(FIELD.halfX, x)),
+      Math.max(-FIELD.halfY, Math.min(FIELD.halfY, y)),
+    ] as [number, number];
   };
 
-  const handleSimFieldMouseUp = () => {
-    isDragging.current = false;
+  const onFieldDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0 || !fieldRef.current) return;
+    e.currentTarget.setPointerCapture(e.pointerId);
+    const [x, y] = toMm(e);
+    worldRef.current.ball = { x, y, vx: 0, vy: 0 };
+    dragRef.current = { x, y, t: performance.now(), vx: 0, vy: 0 };
   };
 
-  const updateSimBallFromMouse = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (!fieldRef.current) return;
-    const rect = fieldRef.current.getBoundingClientRect();
-    const xPct = (e.clientX - rect.left) / rect.width;
-    const yPct = (e.clientY - rect.top) / rect.height;
-
-    const mmX = (xPct - 0.5) * 9000;
-    const mmY = (yPct - 0.5) * 6000;
-
-    setBall({
-      x: Math.max(-4200, Math.min(4200, mmX)),
-      y: Math.max(-2800, Math.min(2800, mmY)),
-      vx: 0,
-      vy: 0,
-    });
+  const onFieldMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    const d = dragRef.current;
+    if (!d) return;
+    const [x, y] = toMm(e);
+    const now = performance.now();
+    const dtS = Math.max(0.001, (now - d.t) / 1000);
+    dragRef.current = {
+      x,
+      y,
+      t: now,
+      vx: d.vx * 0.5 + ((x - d.x) / dtS) * 0.5,
+      vy: d.vy * 0.5 + ((y - d.y) / dtS) * 0.5,
+    };
+    worldRef.current.ball = { x, y, vx: 0, vy: 0 };
   };
+
+  const onFieldUp = () => {
+    const d = dragRef.current;
+    if (!d) return;
+    dragRef.current = null;
+    const sp = Math.hypot(d.vx, d.vy);
+    const k = sp > 4000 ? 4000 / sp : 1; // release velocity = throw (capped to a hard hand roll)
+    worldRef.current.ball.vx = performance.now() - d.t < 80 ? d.vx * k : 0;
+    worldRef.current.ball.vy = performance.now() - d.t < 80 ? d.vy * k : 0;
+  };
+
+  /* ---------------- derived view data ---------------- */
+  const { cols, rows } = gridDimsFor(strategy.resolution);
+  const activeId = w.activeSituationId;
+  const activeZone = strategy.situations.find((s) => s.id === activeId) ?? null;
+  const activeIdx = strategy.situations.findIndex((s) => s.id === activeId);
+  const zoneShapes = strategy.situations.map((s, i) => ({
+    s,
+    color: zoneColor(i),
+    isActive: s.id === activeId,
+    d: quartersPath(
+      quartersOfSituation(s as typeof s & { selectedQuarters?: string[] }, cols, rows)
+    ),
+  }));
+  const fmtTime = `${String(Math.floor(w.time / 60)).padStart(2, '0')}:${String(
+    Math.floor(w.time % 60)
+  ).padStart(2, '0')}`;
 
   return (
-    <div
-      className="flex-1 flex flex-col w-full bg-[#0F1115] text-[#e2e2e8] overflow-hidden select-none"
-      onMouseUp={handleSimFieldMouseUp}
-    >
-      {/* Simulation Top Control Bar */}
-      <div className="h-12 border-b border-[#2D3139] bg-[#181A1E] px-4 md:px-6 flex items-center justify-between shrink-0">
+    <div className="flex-1 flex flex-col w-full bg-[#0F1115] text-[#e2e2e8] overflow-hidden select-none">
+      {/* Top control bar */}
+      <div className="min-h-12 border-b border-[#2D3139] bg-[#181A1E] px-4 md:px-6 py-1.5 flex flex-wrap items-center justify-between gap-2 shrink-0">
         <div className="flex items-center gap-2">
-          {/* Play / Pause */}
           <button
             onClick={() => setIsRunning(!isRunning)}
             className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold uppercase tracking-wider transition-colors cursor-pointer ${
@@ -401,288 +196,358 @@ export const SimulationView: React.FC<SimulationViewProps> = ({ strategy }) => {
                 : 'bg-[#22252A] text-white border border-[#2D3139]'
             }`}
           >
-            {isRunning ? (
-              <>
-                <Pause className="w-3.5 h-3.5" />
-                <span>PAUSE</span>
-              </>
-            ) : (
-              <>
-                <Play className="w-3.5 h-3.5" />
-                <span>PLAY</span>
-              </>
-            )}
+            {isRunning ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5" />}
+            <span>{isRunning ? 'PAUSE' : 'PLAY'}</span>
           </button>
 
-          {/* Reset */}
           <button
-            onClick={handleResetPositions}
+            onClick={handleRestart}
             className="flex items-center gap-1.5 px-3 py-1.5 bg-[#1e2024] border border-[#2D3139] hover:border-[#fabc4d] text-xs font-bold uppercase tracking-wider text-[#e2e2e8] transition-colors cursor-pointer"
           >
             <RotateCcw className="w-3.5 h-3.5" />
-            <span>RESET DRILL</span>
+            <span>RESTART</span>
           </button>
 
-          {/* Speed selector */}
-          <div className="flex items-center gap-1 bg-[#0F1115] border border-[#2D3139] p-0.5 ml-2">
-            {[0.5, 1, 2].map((spd) => (
+          <div className="flex items-center gap-1 bg-[#0F1115] border border-[#2D3139] p-0.5 ml-1">
+            {[0.5, 1, 2, 4].map((spd) => (
               <button
                 key={spd}
                 onClick={() => setSimSpeed(spd)}
                 className={`px-2 py-0.5 text-[11px] font-mono font-bold transition-colors cursor-pointer ${
-                  simSpeed === spd
-                    ? 'bg-[#fabc4d] text-[#111317]'
-                    : 'text-[#8E95A5] hover:text-white'
+                  simSpeed === spd ? 'bg-[#fabc4d] text-[#111317]' : 'text-[#8E95A5] hover:text-white'
                 }`}
               >
                 {spd}x
               </button>
             ))}
           </div>
+
+          {onEditStrategy && (
+            <button
+              onClick={onEditStrategy}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-[#1e2024] border border-[#2D3139] hover:border-[#fabc4d] text-xs font-bold uppercase tracking-wider text-[#fabc4d] transition-colors cursor-pointer ml-1"
+            >
+              <Cpu className="w-3.5 h-3.5" />
+              <span>EDIT STRATEGY</span>
+            </button>
+          )}
         </div>
 
-        {/* Drill Scenario Selector */}
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-1.5">
           <span className="text-xs font-bold uppercase tracking-wider text-[#8E95A5] hidden md:inline">
             DRILL:
           </span>
-          {['Free Match', 'Corner Kick Defense', 'Penalty Shootout'].map((scen) => (
+          {(Object.keys(SCENARIOS) as Scenario[]).map((s) => (
             <button
-              key={scen}
-              onClick={() => handleScenarioChange(scen)}
+              key={s}
+              onClick={() => startScenario(s)}
               className={`px-2.5 py-1 text-xs font-bold uppercase transition-colors cursor-pointer ${
-                activeScenario === scen
+                scenario === s
                   ? 'bg-[#22252A] text-[#fabc4d] border border-[#fabc4d]'
                   : 'text-[#8E95A5] hover:text-white border border-transparent'
               }`}
             >
-              {scen}
+              {s}
             </button>
           ))}
         </div>
       </div>
 
-      {/* Main Simulation Viewport (Canvas Left, Strategy Execution Monitor Right) */}
       <div className="flex-1 grid grid-cols-1 lg:grid-cols-12 gap-0 overflow-hidden">
-        {/* SIMULATION FIELD (8 or 9 cols) */}
+        {/* FIELD */}
         <div className="lg:col-span-8 xl:col-span-9 border-r border-[#2D3139] bg-[#111317] flex flex-col p-4 overflow-hidden">
-          <div className="flex items-center justify-between pb-2 mb-2 border-b border-[#2D3139]/50">
+          <div className="flex flex-wrap items-center justify-between gap-2 pb-2 mb-2 border-b border-[#2D3139]/50">
             <div className="flex items-center gap-3">
               <span className="text-xs font-bold uppercase tracking-wider text-[#fabc4d]">
                 PHYSICS SIMULATOR 2D
               </span>
               <span className="text-[11px] text-[#8E95A5] font-mono">
-                BALL: [{(ball.x / 1000).toFixed(2)}m, {(ball.y / 1000).toFixed(2)}m]
+                BALL: [{(w.ball.x / 1000).toFixed(2)}m, {(-w.ball.y / 1000).toFixed(2)}m]
+              </span>
+              <span
+                className="text-[11px] font-mono font-bold px-1.5 py-0.5 border"
+                style={
+                  activeZone
+                    ? { color: zoneColor(activeIdx), borderColor: zoneColor(activeIdx) }
+                    : { color: '#8E95A5', borderColor: '#2D3139' }
+                }
+              >
+                ZONE: {activeZone ? activeZone.name : 'NONE'}
               </span>
             </div>
-            <div className="flex items-center gap-2 text-xs font-mono">
-              <label className="flex items-center gap-1 cursor-pointer text-[#8E95A5] hover:text-white">
-                <input
-                  type="checkbox"
-                  checked={showZones}
-                  onChange={(e) => setShowZones(e.target.checked)}
-                  className="accent-[#fabc4d]"
-                />
-                <span>ZONES</span>
-              </label>
-              <label className="flex items-center gap-1 cursor-pointer text-[#8E95A5] hover:text-white ml-2">
-                <input
-                  type="checkbox"
-                  checked={showVectors}
-                  onChange={(e) => setShowVectors(e.target.checked)}
-                  className="accent-[#fabc4d]"
-                />
-                <span>VECTORS</span>
-              </label>
+            <div className="flex items-center gap-3 text-xs font-mono">
+              {(
+                [
+                  ['ZONES', showZones, setShowZones],
+                  ['VECTORS', showVectors, setShowVectors],
+                  ['OPPONENTS', opponentsOn, setOpponentsOn],
+                ] as const
+              ).map(([label, val, set]) => (
+                <label
+                  key={label}
+                  className="flex items-center gap-1 cursor-pointer text-[#8E95A5] hover:text-white"
+                >
+                  <input
+                    type="checkbox"
+                    checked={val}
+                    onChange={(e) => set(e.target.checked)}
+                    className="accent-[#fabc4d]"
+                  />
+                  <span>{label}</span>
+                </label>
+              ))}
             </div>
           </div>
 
-          {/* Interactive Simulation Pitch */}
-          <div
-            ref={fieldRef}
-            onMouseDown={handleSimFieldMouseDown}
-            onMouseMove={handleSimFieldMouseMove}
-            className="relative flex-1 bg-[#131B18] border border-[#2D3139] overflow-hidden flex items-center justify-center cursor-crosshair shadow-inner"
-            style={{ minHeight: '380px' }}
-          >
-            {/* Field Vector Markings */}
-            <svg
-              viewBox="-4500 -3000 9000 6000"
-              className="absolute inset-0 w-full h-full stroke-[#1E3F30] stroke-[25] fill-none pointer-events-none"
-            >
-              {/* Outer boundary */}
-              <rect x="-4200" y="-2800" width="8400" height="5600" />
-              {/* Halfway line */}
-              <line x1="0" y1="-2800" x2="0" y2="2800" />
-              {/* Center Circle */}
-              <circle cx="0" cy="0" r="1000" />
-              <circle cx="0" cy="0" r="30" fill="#1E3F30" />
-
-              {/* Friendly Penalty Area */}
-              <rect x="-4200" y="-1200" width="1200" height="2400" />
-              <path d="M -3000 -600 A 700 700 0 0 1 -3000 600" />
-              <rect x="-4450" y="-800" width="250" height="1600" stroke="#2D3139" />
-
-              {/* Opponent Penalty Area */}
-              <rect x="3000" y="-1200" width="1200" height="2400" />
-              <path d="M 3000 -600 A 700 700 0 0 0 3000 600" />
-              <rect x="4200" y="-800" width="250" height="1600" stroke="#2D3139" />
-            </svg>
-
-            {/* Situation 1 Zone Overlay if enabled */}
-            {showZones && (
-              <div
-                className="absolute border-2 border-dashed border-[#fabc4d]/60 bg-[#fabc4d]/5 pointer-events-none"
-                style={{
-                  left: '12%',
-                  top: '15%',
-                  width: '35%',
-                  height: '70%',
-                }}
-              >
-                <div className="p-1 text-[10px] font-bold text-[#fabc4d] font-mono">
-                  Situation 1 (Active Strategy Bounds)
-                </div>
-              </div>
-            )}
-
-            {/* BALL */}
+          {/* Pitch */}
+          <div className="flex-1 flex items-center justify-center min-h-0">
             <div
-              className="absolute pointer-events-none z-30"
-              style={{
-                left: `${((ball.x + 4500) / 9000) * 100}%`,
-                top: `${((ball.y + 3000) / 6000) * 100}%`,
-                transform: 'translate(-50%, -50%)',
-              }}
+              ref={fieldRef}
+              onPointerDown={onFieldDown}
+              onPointerMove={onFieldMove}
+              onPointerUp={onFieldUp}
+              onPointerCancel={onFieldUp}
+              className="relative w-full max-h-full bg-[#131B18] border border-[#2D3139] overflow-hidden cursor-crosshair touch-none"
+              style={{ aspectRatio: `${FIELD.outerX} / ${FIELD.outerY}` }}
             >
-              <div className="w-5 h-5 rounded-full border-2 border-[#fabc4d] bg-white flex items-center justify-center shadow-[0_0_12px_#fabc4d]">
-                <div className="w-1.5 h-1.5 bg-[#111317] rounded-full" />
-              </div>
-            </div>
-
-            {/* Friendly Robots */}
-            {bots.map((bot) => (
-              <div
-                key={bot.id}
-                className="absolute z-20 flex flex-col items-center pointer-events-none"
-                style={{
-                  left: `${((bot.x + 4500) / 9000) * 100}%`,
-                  top: `${((bot.y + 3000) / 6000) * 100}%`,
-                  transform: 'translate(-50%, -50%)',
-                }}
+              <svg
+                viewBox={`${-FIELD.outerX} ${-FIELD.outerY} ${2 * FIELD.outerX} ${2 * FIELD.outerY}`}
+                className="absolute inset-0 w-full h-full stroke-[#1E3F30] stroke-[25] fill-none pointer-events-none"
               >
-                <div className="relative">
-                  <div className="w-8 h-8 rounded-full border-2 border-[#fabc4d] bg-[#3b2d2d] text-white font-bold text-xs flex items-center justify-center shadow-md">
-                    {bot.id}
-                    {/* Heading indicator */}
+                <rect x={-FIELD.halfX} y={-FIELD.halfY} width={2 * FIELD.halfX} height={2 * FIELD.halfY} />
+                <line x1="0" y1={-FIELD.halfY} x2="0" y2={FIELD.halfY} />
+                <circle cx="0" cy="0" r="1000" />
+                <circle cx="0" cy="0" r="30" fill="#1E3F30" />
+                <rect x={-FIELD.halfX} y="-1200" width="1200" height="2400" />
+                <path d="M -3000 -600 A 700 700 0 0 1 -3000 600" />
+                <rect x={-FIELD.halfX - FIELD.goalDepth} y={-FIELD.goalHalfW} width={FIELD.goalDepth} height={2 * FIELD.goalHalfW} stroke="#3DD68C" strokeOpacity={0.5} />
+                <rect x={FIELD.halfX - 1200} y="-1200" width="1200" height="2400" />
+                <path d="M 3000 -600 A 700 700 0 0 0 3000 600" />
+                <rect x={FIELD.halfX} y={-FIELD.goalHalfW} width={FIELD.goalDepth} height={2 * FIELD.goalHalfW} stroke="#e54d42" strokeOpacity={0.5} />
+              </svg>
+
+              {/* Strategy zones (same shapes as the builder) */}
+              {showZones && (
+                <svg
+                  viewBox={`0 0 ${cols} ${rows}`}
+                  preserveAspectRatio="none"
+                  className="absolute pointer-events-none overflow-visible"
+                  style={{
+                    left: `${ZONE_LEFT}%`,
+                    top: `${ZONE_TOP}%`,
+                    width: `${ZONE_W}%`,
+                    height: `${ZONE_H}%`,
+                  }}
+                >
+                  {[...zoneShapes.filter((z) => !z.isActive), ...zoneShapes.filter((z) => z.isActive)].map(
+                    (z) =>
+                      z.d && (
+                        <path
+                          key={z.s.id}
+                          d={z.d}
+                          fill={z.color}
+                          fillOpacity={z.isActive ? 0.16 : 0.05}
+                          stroke={z.color}
+                          strokeOpacity={z.isActive ? 0.95 : 0.35}
+                          strokeWidth={z.isActive ? 2 : 1}
+                          strokeDasharray={z.isActive ? '6 4' : '3 4'}
+                          vectorEffect="non-scaling-stroke"
+                        />
+                      )
+                  )}
+                </svg>
+              )}
+
+              {/* Target vectors */}
+              {showVectors && (
+                <svg
+                  viewBox={`${-FIELD.outerX} ${-FIELD.outerY} ${2 * FIELD.outerX} ${2 * FIELD.outerY}`}
+                  className="absolute inset-0 w-full h-full pointer-events-none"
+                >
+                  {w.friendly.map((r) => {
+                    const t = w.exec[r.id]?.target;
+                    if (!t || Math.hypot(t[0] - r.x, t[1] - r.y) < 40) return null;
+                    return (
+                      <g key={r.id}>
+                        <line
+                          x1={r.x}
+                          y1={r.y}
+                          x2={t[0]}
+                          y2={t[1]}
+                          stroke="#fabc4d"
+                          strokeOpacity={0.6}
+                          strokeWidth={18}
+                          strokeDasharray="60 50"
+                        />
+                        <circle cx={t[0]} cy={t[1]} r={40} fill="none" stroke="#fabc4d" strokeOpacity={0.6} strokeWidth={14} />
+                      </g>
+                    );
+                  })}
+                  <line
+                    x1={w.ball.x}
+                    y1={w.ball.y}
+                    x2={w.ball.x + w.ball.vx * 0.25}
+                    y2={w.ball.y + w.ball.vy * 0.25}
+                    stroke="#ffffff"
+                    strokeOpacity={0.5}
+                    strokeWidth={14}
+                  />
+                </svg>
+              )}
+
+              {/* Ball */}
+              <div
+                className="absolute pointer-events-none z-30"
+                style={{ left: `${pctX(w.ball.x)}%`, top: `${pctY(w.ball.y)}%`, transform: 'translate(-50%, -50%)' }}
+              >
+                <div className="w-4 h-4 rounded-full border-2 border-[#fabc4d] bg-white shadow-[0_0_10px_#fabc4d]" />
+              </div>
+
+              {/* Friendly robots */}
+              {w.friendly.map((r) => {
+                const hasStack = !!routineFor(strategy, activeId, r.id)?.blocks.length;
+                return (
+                  <div
+                    key={r.id}
+                    className="absolute z-20 flex flex-col items-center pointer-events-none"
+                    style={{ left: `${pctX(r.x)}%`, top: `${pctY(r.y)}%`, transform: 'translate(-50%, -50%)' }}
+                  >
                     <div
-                      className="absolute w-2 h-1 bg-[#fabc4d]"
-                      style={{
-                        transform: `rotate(${bot.angle}deg) translate(14px)`,
-                      }}
-                    />
+                      className={`relative w-7 h-7 rounded-full border-2 text-white font-bold text-[11px] flex items-center justify-center shadow-md ${
+                        hasStack ? 'border-[#fabc4d] bg-[#3b2d2d]' : 'border-[#8E95A5] bg-[#22252A] opacity-70'
+                      }`}
+                    >
+                      {r.id}
+                      <div
+                        className="absolute w-2 h-1 bg-[#fabc4d]"
+                        style={{ transform: `rotate(${r.angle}deg) translate(13px)` }}
+                      />
+                    </div>
                   </div>
-                </div>
-                <span className="text-[9px] font-bold text-[#fabc4d] font-mono mt-0.5">
-                  BOT {bot.id}
-                </span>
-              </div>
-            ))}
+                );
+              })}
 
-            {/* Opponent Robots */}
-            {opponents.map((opp) => (
-              <div
-                key={opp.id}
-                className="absolute z-10 flex flex-col items-center pointer-events-none"
-                style={{
-                  left: `${((opp.x + 4500) / 9000) * 100}%`,
-                  top: `${((opp.y + 3000) / 6000) * 100}%`,
-                  transform: 'translate(-50%, -50%)',
-                }}
-              >
-                <div className="w-7 h-7 bg-[#22252A] border border-white text-white font-bold text-xs flex items-center justify-center rotate-45">
-                  <span className="-rotate-45">B{opp.id - 100}</span>
-                </div>
-              </div>
-            ))}
+              {/* Opponents */}
+              {opponentsOn &&
+                w.opponents.map((o) => (
+                  <div
+                    key={o.id}
+                    className="absolute z-10 pointer-events-none"
+                    style={{ left: `${pctX(o.x)}%`, top: `${pctY(o.y)}%`, transform: 'translate(-50%, -50%)' }}
+                  >
+                    <div className="w-6 h-6 bg-[#22252A] border border-white text-white font-bold text-[10px] flex items-center justify-center rotate-45">
+                      <span className="-rotate-45">{o.label}</span>
+                    </div>
+                  </div>
+                ))}
+            </div>
           </div>
 
-          <div className="mt-3 flex items-center justify-between text-xs text-[#8E95A5] font-mono">
-            <span>Tip: Click and drag anywhere on the field to toss the ball!</span>
-            <span className="text-[#3DD68C]">PHYSICS ENGINE: ACTIVE (60 TPS)</span>
+          <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-xs text-[#8E95A5] font-mono">
+            <span>Drag the ball to place it — flick and release to throw it.</span>
+            <span>
+              Attacking <span className="text-[#e54d42] font-bold">→ right goal</span>, defending{' '}
+              <span className="text-[#3DD68C] font-bold">left goal</span>
+            </span>
           </div>
         </div>
 
-        {/* RIGHT PANE: ACTIVE STRATEGY EXECUTION INSPECTOR */}
+        {/* INSPECTOR */}
         <div className="lg:col-span-4 xl:col-span-3 bg-[#181A1E] flex flex-col p-4 overflow-y-auto">
           <div className="pb-3 border-b border-[#2D3139]">
-            <span className="text-xs font-bold uppercase tracking-wider text-white">
-              STRATEGY EXECUTION INSPECTOR
-            </span>
-            <div className="text-[10px] text-[#fabc4d] mt-1 font-mono">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-bold uppercase tracking-wider text-white">
+                STRATEGY EXECUTION
+              </span>
+              <span className="flex items-center gap-1.5 text-xs font-mono font-bold">
+                <Trophy className="w-3.5 h-3.5 text-[#fabc4d]" />
+                <span className="text-[#3DD68C]">{w.score.us}</span>
+                <span className="text-[#8E95A5]">:</span>
+                <span className="text-[#e54d42]">{w.score.them}</span>
+                <span className="text-[#8E95A5] ml-1">{fmtTime}</span>
+              </span>
+            </div>
+            <div className="text-[10px] text-[#fabc4d] mt-1 font-mono truncate">
               EVALUATING: {strategy.filename}
             </div>
           </div>
 
-          <div className="mt-4 space-y-4">
-            {bots.slice(0, 3).map((bot) => {
-              const routine = strategy.routines.find((r) => r.robotId === bot.id);
+          <div className="mt-3 space-y-2.5">
+            {w.friendly.map((bot) => {
+              const routine = routineFor(strategy, activeId, bot.id);
+              const st = w.exec[bot.id];
               return (
-                <div
-                  key={bot.id}
-                  className="p-3 bg-[#0F1115] border border-[#2D3139] space-y-2"
-                >
+                <div key={bot.id} className="p-2.5 bg-[#0F1115] border border-[#2D3139] space-y-1.5">
                   <div className="flex items-center justify-between text-xs font-bold">
-                    <span className="text-[#fabc4d]">ROBOT {bot.id} ROUTINE</span>
-                    <span className="text-[#3DD68C] text-[10px] font-mono">
-                      ACTIVE TRIGGER
+                    <span className="flex items-center gap-1.5 text-[#fabc4d]">
+                      <Bot className="w-3.5 h-3.5" /> ROBOT {bot.id}
                     </span>
+                    <span className="text-[10px] font-mono text-[#8E95A5] truncate ml-2">{st?.status}</span>
                   </div>
-
-                  {routine ? (
+                  {routine && routine.blocks.length > 0 ? (
                     <div className="space-y-1">
-                      {routine.blocks.map((blk, idx) => (
-                        <div
-                          key={blk.id}
-                          className={`p-2 text-xs flex items-center justify-between ${
-                            blk.category === 'motion'
-                              ? 'bg-[#2563eb]/20 border border-[#2563eb]/50 text-blue-200'
-                              : blk.category === 'tactical'
-                              ? 'bg-[#16a34a]/20 border border-[#16a34a]/50 text-green-200'
-                              : 'bg-[#ea580c]/20 border border-[#ea580c]/50 text-orange-200'
-                          }`}
-                        >
-                          <div className="flex items-center gap-1.5 font-bold uppercase text-[11px]">
-                            {blk.category === 'motion' ? (
-                              <Navigation className="w-3 h-3" />
-                            ) : blk.category === 'tactical' ? (
-                              <Shield className="w-3 h-3" />
-                            ) : (
-                              <Zap className="w-3 h-3" />
-                            )}
-                            <span>{blk.type}</span>
+                      {routine.blocks.map((blk, idx) => {
+                        const current = idx === st?.blockIdx;
+                        const hex =
+                          blk.category === 'motion'
+                            ? '#2563eb'
+                            : blk.category === 'tactical'
+                            ? '#16a34a'
+                            : '#ea580c';
+                        return (
+                          <div
+                            key={blk.id}
+                            className={`px-2 py-1 text-[11px] flex items-center justify-between border transition-colors ${
+                              current ? 'ring-1 ring-white/70 text-white' : 'text-[#c9ccd3]'
+                            }`}
+                            style={{
+                              backgroundColor: `${hex}${current ? '66' : '1a'}`,
+                              borderColor: `${hex}99`,
+                            }}
+                          >
+                            <span className="flex items-center gap-1.5 font-bold uppercase">
+                              {blk.category === 'motion' ? (
+                                <Navigation className="w-3 h-3" />
+                              ) : blk.category === 'tactical' ? (
+                                <Shield className="w-3 h-3" />
+                              ) : (
+                                <Zap className="w-3 h-3" />
+                              )}
+                              {current ? '▶ ' : ''}
+                              {blk.type}
+                            </span>
+                            <span className="text-[10px] font-mono opacity-80 truncate ml-2">
+                              {Object.values(blk.params as Record<string, string>).join(' · ')}
+                            </span>
                           </div>
-                          <span className="text-[10px] font-mono opacity-80">
-                            {JSON.stringify(blk.params)}
-                          </span>
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   ) : (
                     <div className="text-[11px] text-[#8E95A5] italic">
-                      No blocks assigned in active situation.
+                      {activeZone ? `No stack for ${activeZone.name}.` : 'Ball is outside every zone.'}
                     </div>
                   )}
-
-                  <div className="pt-1 text-[10px] font-mono text-[#8E95A5] flex justify-between border-t border-[#2D3139]/40">
-                    <span>COORDS:</span>
-                    <span className="text-white">
-                      [{Math.round(bot.x)}, {Math.round(bot.y)}]
-                    </span>
-                  </div>
                 </div>
               );
             })}
+          </div>
+
+          <div className="mt-auto pt-4">
+            <span className="text-[10px] font-bold uppercase tracking-wider text-[#8E95A5] block mb-1">
+              MATCH LOG
+            </span>
+            <div className="h-32 bg-[#0F1115] border border-[#2D3139] p-2 font-mono text-[10px] text-[#8E95A5] overflow-y-auto space-y-1">
+              {w.events.length === 0 ? (
+                <div className="italic">Events will appear here.</div>
+              ) : (
+                w.events.map((ev, i) => (
+                  <div key={i} className={ev.includes('GOAL') ? 'text-[#3DD68C] font-bold' : ''}>
+                    {ev}
+                  </div>
+                ))
+              )}
+            </div>
           </div>
         </div>
       </div>

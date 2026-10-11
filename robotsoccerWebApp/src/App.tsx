@@ -83,6 +83,7 @@ export default function App() {
             onSaveStrategy={handleSaveStrategy}
             onSaveAsStrategy={() => setStrategyModalMode('saveAs')}
             onImportStrategy={() => setStrategyModalMode('import')}
+            onTestInSimulation={() => setCurrentScreen('simulation')}
           />
         )}
 
@@ -94,7 +95,10 @@ export default function App() {
         )}
 
         {currentScreen === 'simulation' && (
-          <SimulationView strategy={strategy} />
+          <SimulationView
+            strategy={strategy}
+            onEditStrategy={() => setCurrentScreen('strategy')}
+          />
         )}
       </main>
 
