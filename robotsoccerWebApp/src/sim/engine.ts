@@ -173,7 +173,8 @@ interface Command {
   kick: { dx: number; dy: number; minAlign: number } | null;
 }
 
-const FRIENDLY_HOME: [number, number, number][] = [
+/** Kick-off spots (x, y, heading) for robots 1..5. */
+export const FRIENDLY_HOME: [number, number, number][] = [
   [-1200, 0, 0],
   [-2400, -800, 0],
   [-4000, 0, 0],
@@ -333,6 +334,19 @@ const shadowOnSegment = (
   return [x1 + t * dx, y1 + t * dy];
 };
 
+/** Default defender line (left/right as seen facing the opponent goal). */
+const DEFENDER_LEFT: [number, number] = [-2500, -1200];
+const DEFENDER_RIGHT: [number, number] = [-2500, 1200];
+
+/** Shortest distance from (px, py) to segment AB (mm). */
+const distToSegment = (px: number, py: number, a: [number, number], b: [number, number]) => {
+  const dx = b[0] - a[0];
+  const dy = b[1] - a[1];
+  const len2 = dx * dx + dy * dy || 1;
+  const t = clamp(((px - a[0]) * dx + (py - a[1]) * dy) / len2, 0, 1);
+  return hyp(px - (a[0] + t * dx), py - (a[1] + t * dy));
+};
+
 const hold = (bot: SimRobot): Command => ({
   tx: bot.x,
   ty: bot.y,
@@ -361,7 +375,9 @@ const planKick = (
   strike: number, // 0..1 fraction of max speed at contact
   minAlign: number,
   st: ExecState,
-  label: string
+  label: string,
+  requireStill = true, // clearances may strike a moving ball
+  runUpMm?: number // how far behind the ball to line up before striking (mm); auto if omitted
 ): Command => {
   const b = w.ball;
   let dx = aim[0] - b.x;
@@ -371,9 +387,11 @@ const planKick = (
   dy /= dl;
   const face = (Math.atan2(dy, dx) * 180) / Math.PI;
 
-  const vStrike = MAX_SPEED * strike;
-  // distance needed to reach strike speed from rest, plus a little margin
-  const runUp = clamp((vStrike * vStrike) / (2 * MAX_ACCEL) + 60, 140, 900);
+  // Run-up: gap between the robot's bumper and the ball when it starts its strike.
+  // A short run-up can't reach full speed, so it limits how hard the ball is hit.
+  const auto = (MAX_SPEED * strike) ** 2 / (2 * MAX_ACCEL) + 60;
+  const runUp = clamp(runUpMm ?? auto, 30, 1500);
+  const reachable = Math.min(MAX_SPEED * strike, Math.sqrt(2 * MAX_ACCEL * runUp));
   const behind: [number, number] = [b.x - dx * (CONTACT + runUp), b.y - dy * (CONTACT + runUp)];
 
   const toBallX = b.x - bot.x;
@@ -417,12 +435,14 @@ const planKick = (
   }
 
   const settled = hyp(bot.x - behind[0], bot.y - behind[1]) < 70 && hyp(bot.vx, bot.vy) < 250;
-  const ballStill = hyp(b.vx, b.vy) < 300;
+  const ballStill = !requireStill || hyp(b.vx, b.vy) < 300;
   const facing = Math.abs(angleDiff(bot.angle, face)) < 15;
   if (settled && align >= minAlign && ballStill && facing) {
     st.phase = 2;
   }
-  st.status = `${label}: lining up (align ${align.toFixed(2)})`;
+  st.status = `${label}: lining up (align ${align.toFixed(2)}) · run-up ${Math.round(
+    runUp / 10
+  )} cm → max hit ${(reachable / 1000).toFixed(2)} m/s`;
   return { tx: behind[0], ty: behind[1], speed: 0.8, face, spin: 0, kick: null };
 };
 
@@ -477,22 +497,59 @@ const runBlock = (
       return { cmd: { ...hold(bot), spin: rpm * 6 }, done: st.t >= 1.5 };
     }
 
-    case 'defender': {
-      const a = parsePoint(p.start) ?? NAMED_SPOTS['left flank'];
-      const b = parsePoint(p.stop) ?? NAMED_SPOTS['penalty arc'];
-      const [tx, ty] = shadowOnSegment(a, b, ball, OWN_GOAL);
-      st.status = 'Defender: shadowing ball';
-      const yieldNow = !isLast && distBall < 420 && st.t > 0.3;
-      return { cmd: { tx, ty, speed: 1, face: faceBall, spin: 0, kick: null }, done: yieldNow };
-    }
-
+    case 'defender':
     case 'goalkeeper': {
-      const a = parsePoint(p.start) ?? NAMED_SPOTS['post l'];
-      const b = parsePoint(p.stop) ?? NAMED_SPOTS['post r'];
+      // Guard a line between LEFT and RIGHT (left/right as seen facing the opponent goal),
+      // standing where the ball's path to our goal crosses it. If the ball comes within the
+      // KICK-OUT range of the line, leave it, clear the ball away from our goal, then return.
+      const isGK = block.type === 'goalkeeper';
+      const label = isGK ? 'GoalKeeper' : 'Defender';
+      const a =
+        parsePoint(p.left ?? p.start) ?? (isGK ? NAMED_SPOTS['post l'] : DEFENDER_LEFT);
+      const b =
+        parsePoint(p.right ?? p.stop) ?? (isGK ? NAMED_SPOTS['post r'] : DEFENDER_RIGHT);
+      const kickout = clamp(parseNum(p.kickout, isGK ? 40 : 60), 0, 400) * 10; // cm → mm
+      const ballToLine = distToSegment(ball.x, ball.y, a, b);
+
+      if (st.phase === 1) {
+        // just cleared the ball
+        if (!isLast) return { cmd: hold(bot), done: true }; // hand over to the next block
+        st.phase = 0;
+      }
+
+      // A fast ball heading for our goal gets BLOCKED first (stay on the line); once it's
+      // slowed or bounced off, step out and clear it.
+      const gdx = OWN_GOAL[0] - ball.x;
+      const gdy = OWN_GOAL[1] - ball.y;
+      const towardGoal = (ball.vx * gdx + ball.vy * gdy) / (hyp(gdx, gdy) || 1);
+      const incoming = towardGoal > 500;
+      const clearing =
+        kickout > 0 && !incoming && ballToLine <= kickout + (st.phase === 2 ? 250 : 0);
+      if (clearing) {
+        const gx = ball.x - OWN_GOAL[0];
+        const gy = ball.y - OWN_GOAL[1];
+        const gl = hyp(gx, gy) || 1;
+        const aim: [number, number] = [ball.x + (gx / gl) * 2500, ball.y + (gy / gl) * 2500];
+        return {
+          cmd: planKick(
+            w,
+            bot,
+            aim,
+            0.85,
+            0.5,
+            st,
+            `${label} clearing`,
+            false,
+            p.runup !== undefined ? parseNum(p.runup, 25) * 10 : undefined
+          ),
+          done: false,
+        };
+      }
+      if (st.phase === 2) st.phase = 0; // ball escaped the band before we hit it
+
       const [tx, ty] = shadowOnSegment(a, b, ball, OWN_GOAL);
-      st.status = 'GoalKeeper: covering goal';
-      const yieldNow = !isLast && distBall < 550 && st.t > 0.3;
-      return { cmd: { tx, ty, speed: 1, face: faceBall, spin: 0, kick: null }, done: yieldNow };
+      st.status = `${label}: guarding · ball ${Math.round(ballToLine / 10)} cm from line`;
+      return { cmd: { tx, ty, speed: 1, face: faceBall, spin: 0, kick: null }, done: false };
     }
 
     case 'kickA':
@@ -517,7 +574,17 @@ const runBlock = (
         aim = mates.length ? [mates[0].m.x, mates[0].m.y] : [FIELD.halfX + 200, 0];
       }
       return {
-        cmd: planKick(w, bot, aim, pct, minAlign, st, block.type === 'kickA' ? 'KickA' : 'KickB'),
+        cmd: planKick(
+          w,
+          bot,
+          aim,
+          pct,
+          minAlign,
+          st,
+          block.type === 'kickA' ? 'KickA' : 'KickB',
+          true,
+          p.runup !== undefined ? parseNum(p.runup, 40) * 10 : undefined
+        ),
         done: false,
       };
     }
@@ -757,6 +824,9 @@ export const step = (w: SimWorld, strategy: StrategyConfig, dt: number) => {
       if (blk && (blk.type === 'kickA' || blk.type === 'kickB')) {
         st.phase = 1; // finishes the kick block next tick
         log(w, `${r.label} ${blk.type === 'kickA' ? 'shot (KickA)' : 'passed (KickB)'}`);
+      } else if (blk && (blk.type === 'defender' || blk.type === 'goalkeeper')) {
+        st.phase = 1; // back to the line
+        log(w, `${r.label} cleared the ball (${blk.type === 'goalkeeper' ? 'GoalKeeper' : 'Defender'})`);
       }
     }
   });

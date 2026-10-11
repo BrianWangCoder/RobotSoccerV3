@@ -20,6 +20,10 @@ import {
   Hexagon,
   Trash2,
   Box,
+  Eye,
+  ChevronLeft,
+  ChevronRight,
+  Crosshair,
 } from 'lucide-react';
 import {
   StrategyConfig,
@@ -27,6 +31,8 @@ import {
   RobotRoutine,
   BlockType,
 } from '../types/strategy';
+import { BlockPreview, PreviewSpec } from './BlockPreview';
+import { parsePoint, parseNum, NAMED_SPOTS } from '../sim/engine';
 import {
   Pt,
   ZoneMode,
@@ -39,6 +45,7 @@ import {
   quartersFromDots,
   quartersPath,
   gridDimsFor,
+  quarterCentroid,
 } from '../utils/zones';
 
 /* ------------------------------------------------------------------ */
@@ -50,7 +57,22 @@ interface FieldDef {
   label: string;
   width: string;
   def: string;
+  /** 'stepper' = ◀ value ▶ arrow buttons instead of a text box. */
+  kind?: 'text' | 'stepper';
+  step?: number;
+  min?: number;
+  max?: number;
+  unit?: string;
+  /** Older param name to read if this key is missing (keeps old saved strategies working). */
+  alias?: string;
 }
+
+/** Current value of a field, falling back to its old name, then its default. */
+const fieldValue = (params: Record<string, string | undefined>, f: FieldDef) =>
+  params[f.key] ?? (f.alias ? params[f.alias] : undefined) ?? f.def;
+
+/** Defender / GoalKeeper: guard a line, clear the ball if it gets within the kick-out range. */
+const isRoleType = (t: string) => t === 'defender' || t === 'goalkeeper';
 
 interface BlockDef {
   label: string;
@@ -107,8 +129,10 @@ const BLOCK_DEFS: Record<BlockType, BlockDef> = {
     hover: 'hover:bg-[#15803d]',
     input: 'bg-[#15803d]',
     fields: [
-      { key: 'start', label: 'Start', width: 'w-24', def: '[Left Flank]' },
-      { key: 'stop', label: 'Stop', width: 'w-24', def: '[Penalty Arc]' },
+      { key: 'left', label: 'Left', width: 'w-20', def: '[-250, 120]', alias: 'start' },
+      { key: 'right', label: 'Right', width: 'w-20', def: '[-250, -120]', alias: 'stop' },
+      { key: 'kickout', label: 'Kick-out', width: 'w-10', def: '60', kind: 'stepper', step: 10, min: 0, max: 300, unit: 'cm' },
+      { key: 'runup', label: 'Run-up', width: 'w-10', def: '25', kind: 'stepper', step: 5, min: 5, max: 150, unit: 'cm' },
     ],
   },
   goalkeeper: {
@@ -119,8 +143,10 @@ const BLOCK_DEFS: Record<BlockType, BlockDef> = {
     hover: 'hover:bg-[#15803d]',
     input: 'bg-[#15803d]',
     fields: [
-      { key: 'start', label: 'Start', width: 'w-20', def: '[Post L]' },
-      { key: 'stop', label: 'Stop', width: 'w-20', def: '[Post R]' },
+      { key: 'left', label: 'Left', width: 'w-20', def: '[Post L]', alias: 'start' },
+      { key: 'right', label: 'Right', width: 'w-20', def: '[Post R]', alias: 'stop' },
+      { key: 'kickout', label: 'Kick-out', width: 'w-10', def: '40', kind: 'stepper', step: 10, min: 0, max: 300, unit: 'cm' },
+      { key: 'runup', label: 'Run-up', width: 'w-10', def: '20', kind: 'stepper', step: 5, min: 5, max: 150, unit: 'cm' },
     ],
   },
   kickA: {
@@ -131,8 +157,9 @@ const BLOCK_DEFS: Record<BlockType, BlockDef> = {
     hover: 'hover:bg-[#c2410c]',
     input: 'bg-[#c2410c]',
     fields: [
-      { key: 'threshold', label: 'Threshold', width: 'w-16', def: '0.85' },
-      { key: 'speed', label: 'Speed', width: 'w-16', def: '95%' },
+      { key: 'threshold', label: 'Align', width: 'w-12', def: '0.85' },
+      { key: 'speed', label: 'Speed', width: 'w-14', def: '95%' },
+      { key: 'runup', label: 'Run-up', width: 'w-10', def: '40', kind: 'stepper', step: 5, min: 5, max: 150, unit: 'cm' },
     ],
   },
   kickB: {
@@ -143,8 +170,9 @@ const BLOCK_DEFS: Record<BlockType, BlockDef> = {
     hover: 'hover:bg-[#c2410c]',
     input: 'bg-[#c2410c]',
     fields: [
-      { key: 'threshold', label: 'Threshold', width: 'w-16', def: '0.65' },
-      { key: 'speed', label: 'Speed', width: 'w-16', def: '75%' },
+      { key: 'threshold', label: 'Align', width: 'w-12', def: '0.65' },
+      { key: 'speed', label: 'Speed', width: 'w-14', def: '75%' },
+      { key: 'runup', label: 'Run-up', width: 'w-10', def: '30', kind: 'stepper', step: 5, min: 5, max: 150, unit: 'cm' },
     ],
   },
 };
@@ -182,7 +210,21 @@ type DropHint =
   | { kind: 'blocks'; routineId: string; index: number }
   | { kind: 'routines'; index: number }
   | { kind: 'delete' }
+  | { kind: 'zone'; zoneId: string } // dropped on a zone in the Zones list → copy into it
   | null;
+
+/**
+ * Copy/paste clipboard. Kept at module level so it survives switching screens
+ * (e.g. copy here, check something in Simulation, come back and paste).
+ */
+type Clip =
+  | { kind: 'blocks'; blocks: ScriptBlock[] }
+  | { kind: 'routine'; robotId: number; blocks: ScriptBlock[] };
+let clipboard: Clip | null = null;
+
+/** Deep copy of blocks with fresh ids (so copies are independent of the originals). */
+const cloneBlocks = (blocks: ScriptBlock[]): ScriptBlock[] =>
+  blocks.map((b) => ({ ...b, id: newId('blk'), params: { ...(b.params as object) } } as ScriptBlock));
 
 interface DragState {
   payload: DragPayload;
@@ -209,6 +251,13 @@ const DRAG_THRESHOLD = 5;
 const computeHint = (payload: DragPayload, x: number, y: number): DropHint => {
   const el = document.elementFromPoint(x, y) as HTMLElement | null;
   if (!el) return null;
+
+  const zoneEl = el.closest('[data-zone-drop]') as HTMLElement | null;
+  if (zoneEl) {
+    const copyable =
+      payload.kind === 'stack' || (payload.kind === 'routine' && !payload.fromPalette);
+    return copyable ? { kind: 'zone', zoneId: zoneEl.dataset.zoneDrop! } : null;
+  }
 
   if (el.closest('[data-palette]')) {
     const deletable =
@@ -255,6 +304,7 @@ const computeHint = (payload: DragPayload, x: number, y: number): DropHint => {
 interface BlockViewProps {
   block: ScriptBlock;
   ghost?: boolean;
+  selected?: boolean;
   onParamChange?: (key: string, value: string) => void;
   onDelete?: () => void;
   onPointerDown?: (e: React.PointerEvent<HTMLDivElement>) => void;
@@ -263,6 +313,7 @@ interface BlockViewProps {
 const BlockView: React.FC<BlockViewProps> = ({
   block,
   ghost,
+  selected,
   onParamChange,
   onDelete,
   onPointerDown,
@@ -277,24 +328,72 @@ const BlockView: React.FC<BlockViewProps> = ({
       onPointerDown={onPointerDown}
       className={`${def.bg} text-white px-3 py-2 flex items-center justify-between text-xs shadow-xs ${
         ghost ? '' : 'cursor-grab active:cursor-grabbing touch-none'
-      }`}
+      } ${selected ? 'ring-2 ring-[#38bdf8] ring-offset-1 ring-offset-[#0F1115]' : ''}`}
     >
       <div className="flex items-center gap-2 flex-wrap">
         <Icon className={`w-3.5 h-3.5 shrink-0 ${def.iconClass ?? ''}`} />
         <span className="font-bold">{def.label}</span>
-        {def.fields.map((f) => (
-          <React.Fragment key={f.key}>
-            <span className="text-white/80 text-[11px]">{f.label}:</span>
-            <input
-              data-no-drag
-              type="text"
-              readOnly={ghost}
-              value={params[f.key] ?? f.def}
-              onChange={(e) => onParamChange?.(f.key, e.target.value)}
-              className={`${f.width} ${def.input} text-center text-white text-[11px] px-1 py-0.5 font-mono focus:outline-hidden cursor-text select-text`}
-            />
-          </React.Fragment>
-        ))}
+        {def.fields.map((f) => {
+          const value = fieldValue(params, f);
+          if (f.kind === 'stepper') {
+            const num = parseFloat(value) || 0;
+            const bump = (dir: number) =>
+              onParamChange?.(
+                f.key,
+                String(Math.max(f.min ?? -Infinity, Math.min(f.max ?? Infinity, num + dir * (f.step ?? 1))))
+              );
+            return (
+              <React.Fragment key={f.key}>
+                <span className="text-white/80 text-[11px]">{f.label}:</span>
+                <span data-no-drag className={`inline-flex items-center ${def.input} font-mono text-[11px]`}>
+                  <button
+                    data-no-drag
+                    type="button"
+                    disabled={ghost}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      bump(-1);
+                    }}
+                    className="px-1 py-0.5 hover:bg-black/25 cursor-pointer"
+                    title={`-${f.step ?? 1} ${f.unit ?? ''}`}
+                  >
+                    <ChevronLeft className="w-3 h-3" />
+                  </button>
+                  <span className="min-w-[3.25rem] text-center select-none">
+                    {num}
+                    {f.unit ? ` ${f.unit}` : ''}
+                  </span>
+                  <button
+                    data-no-drag
+                    type="button"
+                    disabled={ghost}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      bump(1);
+                    }}
+                    className="px-1 py-0.5 hover:bg-black/25 cursor-pointer"
+                    title={`+${f.step ?? 1} ${f.unit ?? ''}`}
+                  >
+                    <ChevronRight className="w-3 h-3" />
+                  </button>
+                </span>
+              </React.Fragment>
+            );
+          }
+          return (
+            <React.Fragment key={f.key}>
+              <span className="text-white/80 text-[11px]">{f.label}:</span>
+              <input
+                data-no-drag
+                type="text"
+                readOnly={ghost}
+                value={value}
+                onChange={(e) => onParamChange?.(f.key, e.target.value)}
+                className={`${f.width} ${def.input} text-center text-white text-[11px] px-1 py-0.5 font-mono focus:outline-hidden cursor-text select-text`}
+              />
+            </React.Fragment>
+          );
+        })}
       </div>
       {onDelete && (
         <button
@@ -316,6 +415,7 @@ interface HatViewProps {
   robotId: number;
   situationName: string;
   ghost?: boolean;
+  selected?: boolean;
   onDelete?: () => void;
   onPointerDown?: (e: React.PointerEvent<HTMLDivElement>) => void;
 }
@@ -324,6 +424,7 @@ const HatView: React.FC<HatViewProps> = ({
   robotId,
   situationName,
   ghost,
+  selected,
   onDelete,
   onPointerDown,
 }) => (
@@ -331,7 +432,7 @@ const HatView: React.FC<HatViewProps> = ({
     onPointerDown={onPointerDown}
     className={`relative bg-[#d97706] hover:bg-[#b45309] text-white px-3.5 py-2.5 flex items-center justify-between shadow-md ${
       ghost ? '' : 'cursor-grab active:cursor-grabbing touch-none'
-    }`}
+    } ${selected ? 'ring-2 ring-[#38bdf8] ring-offset-1 ring-offset-[#0F1115]' : ''}`}
   >
     <div className="flex items-center gap-2 font-bold text-xs tracking-wide">
       <Bot className="w-4 h-4 text-white" />
@@ -465,6 +566,33 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
   const ptRows = gridDims.rows + 1;
 
   const [selectedRobotForAdd, setSelectedRobotForAdd] = useState<number>(1);
+
+  /* ---------------- live block preview ---------------- */
+  // Which stack/block the field animation shows. 'block' = just that block, 'stack' = whole stack.
+  const [preview, setPreview] = useState<{
+    routineId: string;
+    blockId: string | null;
+    mode: 'block' | 'stack';
+  } | null>(null);
+  const [previewReplay, setPreviewReplay] = useState(0);
+  const previewRef = useRef(preview);
+  previewRef.current = preview;
+  const selectedRobotRef = useRef(selectedRobotForAdd);
+  selectedRobotRef.current = selectedRobotForAdd;
+  // Defender / GoalKeeper block whose range is being edited on the field (left/right click)
+  const [editingRangeFor, setEditingRangeFor] = useState<string | null>(null);
+  const showBlock = (routineId: string, blockId: string, type?: string) => {
+    setPreview({ routineId, blockId, mode: 'block' });
+    setEditingRangeFor(type && isRoleType(type) ? blockId : null);
+  };
+  const showStack = (routineId: string) => {
+    setPreview((p) => ({
+      routineId,
+      blockId: p?.routineId === routineId ? p.blockId : null,
+      mode: 'stack',
+    }));
+    setEditingRangeFor(null);
+  };
   const [sliderVal, setSliderVal] = useState<number>(1); // 0 = Coarse, 1 = Med, 2 = Fine
 
   /* ---------------- drag state ---------------- */
@@ -482,10 +610,160 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
   const commit = (routines: RobotRoutine[]) =>
     updateRef.current({ ...strategyRef.current, routines });
 
+  /* ---------------- copy / paste / duplicate ---------------- */
+
+  const [toast, setToast] = useState<string | null>(null);
+  const toastTimer = useRef<number | undefined>(undefined);
+  const flash = (msg: string) => {
+    setToast(msg);
+    window.clearTimeout(toastTimer.current);
+    toastTimer.current = window.setTimeout(() => setToast(null), 2000);
+  };
+
+  /**
+   * Appends copies of `blocks` to `robotId`'s stack in `zoneId` (creating the stack if needed).
+   * Returns the target routine id and the first pasted block id.
+   */
+  const copyIntoZone = (zoneId: string, robotId: number, blocks: ScriptBlock[]) => {
+    const s = strategyRef.current;
+    const clones = cloneBlocks(blocks);
+    const existing = s.routines.find((r) => r.robotId === robotId && r.situationId === zoneId);
+    const routineId = existing?.id ?? newId(`routine_r${robotId}`);
+    const routines = existing
+      ? s.routines.map((r) => (r.id === existing.id ? { ...r, blocks: [...r.blocks, ...clones] } : r))
+      : [...s.routines, { id: routineId, robotId, situationId: zoneId, blocks: clones }];
+    commit(routines);
+    return { routineId, firstBlockId: clones[0]?.id ?? null };
+  };
+
+  /** Inserts copies of `blocks` into an existing routine at `index`. */
+  const pasteBlocksAt = (routineId: string, index: number, blocks: ScriptBlock[]) => {
+    const s = strategyRef.current;
+    const clones = cloneBlocks(blocks);
+    commit(
+      s.routines.map((r) => {
+        if (r.id !== routineId) return r;
+        const next = [...r.blocks];
+        next.splice(Math.min(index, next.length), 0, ...clones);
+        return { ...r, blocks: next };
+      })
+    );
+    return clones[0]?.id ?? null;
+  };
+
+  /** What Ctrl+C would copy right now: the selected block, or the whole stack if a hat is selected. */
+  const currentSelection = (): Clip | null => {
+    const s = strategyRef.current;
+    const p = previewRef.current;
+    if (!p) return null;
+    const routine = s.routines.find((r) => r.id === p.routineId);
+    if (!routine) return null;
+    if (p.mode === 'stack' || !p.blockId)
+      return { kind: 'routine', robotId: routine.robotId, blocks: routine.blocks };
+    const blk = routine.blocks.find((b) => b.id === p.blockId);
+    return blk ? { kind: 'blocks', blocks: [blk] } : null;
+  };
+
+  const doCopy = () => {
+    const sel = currentSelection();
+    if (!sel) {
+      flash('Select a block or click a robot hat first');
+      return false;
+    }
+    clipboard = sel;
+    flash(
+      sel.kind === 'routine'
+        ? `Copied Robot ${sel.robotId} stack (${sel.blocks.length} blocks)`
+        : `Copied ${BLOCK_DEFS[sel.blocks[0].type as BlockType]?.label ?? 'block'}`
+    );
+    return true;
+  };
+
+  const doPaste = () => {
+    const clip = clipboard;
+    if (!clip) {
+      flash('Nothing copied yet');
+      return;
+    }
+    const s = strategyRef.current;
+    const zoneId = s.activeSituationId;
+    const zoneName = s.situations.find((z) => z.id === zoneId)?.name ?? 'zone';
+
+    if (clip.kind === 'routine') {
+      // Whole stack → same robot in the zone you're looking at
+      const { routineId } = copyIntoZone(zoneId, clip.robotId, clip.blocks);
+      showStack(routineId);
+      flash(`Pasted Robot ${clip.robotId} stack into ${zoneName}`);
+      return;
+    }
+
+    // Single block → right after the selected block (or end of the selected stack) in this zone
+    const p = previewRef.current;
+    const target = p
+      ? s.routines.find((r) => r.id === p.routineId && r.situationId === zoneId)
+      : undefined;
+    if (target) {
+      const at =
+        p!.mode === 'block' && p!.blockId
+          ? target.blocks.findIndex((b) => b.id === p!.blockId) + 1
+          : target.blocks.length;
+      const id = pasteBlocksAt(target.id, at, clip.blocks);
+      if (id) showBlock(target.id, id, clip.blocks[0].type);
+      flash(`Pasted into Robot ${target.robotId}`);
+      return;
+    }
+    const robotId = selectedRobotRef.current;
+    const { routineId, firstBlockId } = copyIntoZone(zoneId, robotId, clip.blocks);
+    if (firstBlockId) showBlock(routineId, firstBlockId, clip.blocks[0].type);
+    flash(`Pasted into Robot ${robotId} (${zoneName})`);
+  };
+
+  const keyActionsRef = useRef({ doCopy, doPaste });
+  keyActionsRef.current = { doCopy, doPaste };
+
+  // Ctrl/Cmd + C / V / D — ignored while typing in a text box
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+      const t = e.target as HTMLElement | null;
+      if (t?.closest?.('input, textarea, select, [contenteditable="true"]')) return;
+      if (window.getSelection()?.toString()) return; // let normal text copy work
+      const k = e.key.toLowerCase();
+      if (k === 'c') {
+        if (keyActionsRef.current.doCopy()) e.preventDefault();
+      } else if (k === 'v') {
+        e.preventDefault();
+        keyActionsRef.current.doPaste();
+      } else if (k === 'd') {
+        // duplicate in place
+        e.preventDefault();
+        if (keyActionsRef.current.doCopy()) keyActionsRef.current.doPaste();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
   /** Applies a finished drag to the strategy. */
   const applyDrop = (payload: DragPayload, h: DropHint) => {
     const s = strategyRef.current;
     if (!h) return; // dropped nowhere useful → snaps back
+
+    if (h.kind === 'zone') {
+      // COPY (not move) the dragged stack / blocks into that zone
+      const src = s.routines.find(
+        (r) => r.id === (payload.kind === 'stack' || payload.kind === 'routine' ? payload.routineId : '')
+      );
+      if (!src) return;
+      const blocks =
+        payload.kind === 'stack'
+          ? src.blocks.filter((b) => payload.blockIds.includes(b.id))
+          : src.blocks;
+      const zoneName = s.situations.find((z) => z.id === h.zoneId)?.name ?? 'zone';
+      copyIntoZone(h.zoneId, src.robotId, blocks);
+      flash(`Copied Robot ${src.robotId} ${payload.kind === 'stack' ? `blocks (${blocks.length})` : 'stack'} → ${zoneName}`);
+      return;
+    }
 
     if (h.kind === 'delete') {
       if (payload.kind === 'stack') {
@@ -531,6 +809,7 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
       });
       commit(routines);
       if (targetRobot !== null) setSelectedRobotForAdd(targetRobot);
+      if (moving.length) showBlock(h.routineId, moving[0].id, moving[0].type);
       return;
     }
 
@@ -561,6 +840,7 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
     routines.splice(insertAt, 0, moving);
     commit(routines);
     setSelectedRobotForAdd(moving.robotId);
+    showStack(moving.id);
   };
 
   const applyDropRef = useRef(applyDrop);
@@ -672,7 +952,9 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
     const idx = routine.blocks.findIndex((b) => b.id === blockId);
     // Scratch behaviour: grabbing a block takes every block below it too
     const blockIds = routine.blocks.slice(idx).map((b) => b.id);
-    beginPointer(e, { kind: 'stack', routineId: routine.id, blockIds });
+    beginPointer(e, { kind: 'stack', routineId: routine.id, blockIds }, () =>
+      showBlock(routine.id, blockId, routine.blocks.find((b) => b.id === blockId)?.type)
+    );
   };
 
   const startPaletteHatDrag = (e: React.PointerEvent<HTMLElement>, robotId: number) => {
@@ -979,6 +1261,10 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
         ];
 
     onUpdateStrategy({ ...strategy, routines: updatedRoutines });
+    const target = updatedRoutines.find(
+      (r) => r.robotId === targetRobotId && r.situationId === strategy.activeSituationId
+    );
+    if (target) showBlock(target.id, newBlock.id, type);
   };
 
   const handleAddRobotHat = (robotId: number) => {
@@ -1108,8 +1394,15 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
         <BlockView
           key={block.id}
           block={block}
+          selected={
+            preview?.routineId === routine.id &&
+            (preview.mode === 'stack' || preview.blockId === block.id)
+          }
           onPointerDown={(e) => startStackDrag(e, routine, block.id)}
-          onParamChange={(key, value) => handleUpdateParam(routine.id, block.id, key, value)}
+          onParamChange={(key, value) => {
+            handleUpdateParam(routine.id, block.id, key, value);
+            showBlock(routine.id, block.id, block.type);
+          }}
           onDelete={() => handleDeleteBlock(routine.id, block.id)}
         />
       );
@@ -1131,7 +1424,10 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
           <HatView
             robotId={routine.robotId}
             situationName={situationNameFor(routine.situationId)}
-            onPointerDown={(e) => beginPointer(e, { kind: 'routine', routineId: routine.id })}
+            selected={preview?.routineId === routine.id && preview.mode === 'stack'}
+            onPointerDown={(e) =>
+              beginPointer(e, { kind: 'routine', routineId: routine.id }, () => showStack(routine.id))
+            }
             onDelete={() => handleDeleteRoutine(routine.id)}
           />
           <div className="flex flex-col space-y-1 mt-1 pl-3 border-l-2 border-[#fabc4d]/30 min-h-[8px]">
@@ -1201,6 +1497,135 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
       </div>
     );
   };
+
+  /* ---------------- defender / goalkeeper range editing ---------------- */
+
+  const rangeRoutine = editingRangeFor
+    ? strategy.routines.find((r) => r.blocks.some((b) => b.id === editingRangeFor))
+    : undefined;
+  const rangeBlock = rangeRoutine?.blocks.find((b) => b.id === editingRangeFor);
+  const rangeEdit =
+    rangeRoutine && rangeBlock && isRoleType(rangeBlock.type)
+      ? (() => {
+          const prm = rangeBlock.params as Record<string, string | undefined>;
+          const fields = BLOCK_DEFS[rangeBlock.type as BlockType].fields;
+          const val = (k: string) => fieldValue(prm, fields.find((f) => f.key === k)!);
+          const isGK = rangeBlock.type === 'goalkeeper';
+          return {
+            routine: rangeRoutine,
+            block: rangeBlock,
+            label: isGK ? 'GoalKeeper' : 'Defender',
+            left: parsePoint(val('left')) ?? (isGK ? NAMED_SPOTS['post l'] : [-2500, -1200]),
+            right: parsePoint(val('right')) ?? (isGK ? NAMED_SPOTS['post r'] : [-2500, 1200]),
+            kickoutCm: parseNum(val('kickout'), isGK ? 40 : 60),
+            runupCm: parseNum(val('runup'), isGK ? 20 : 25),
+          };
+        })()
+      : null;
+
+  const rangeDragRef = useRef<'left' | 'right' | null>(null);
+
+  // Starting a range edit abandons any half-drawn zone outline
+  useEffect(() => {
+    if (rangeEdit) cancelRef.current();
+  }, [!!rangeEdit]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Esc leaves range-edit mode
+  useEffect(() => {
+    if (!editingRangeFor) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !pathRef.current) setEditingRangeFor(null);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [editingRangeFor]);
+
+  /** Pointer → "[x, y]" in cm (block coordinates: +x towards opponent goal, +y = left). */
+  const pointerToCm = (e: React.PointerEvent): string | null => {
+    const el = fieldRef.current;
+    if (!el) return null;
+    const r = el.getBoundingClientRect();
+    const u = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width));
+    const v = Math.max(0, Math.min(1, (e.clientY - r.top) / r.height));
+    const xmm = -4200 + u * 8400;
+    const ymm = -2800 + v * 5600;
+    const snap = (n: number) => Math.round(n / 5) * 5; // 5 cm steps
+    return `[${snap(xmm / 10)}, ${snap(-ymm / 10)}]`;
+  };
+
+  const setRangeEnd = (end: 'left' | 'right', e: React.PointerEvent) => {
+    if (!rangeEdit) return;
+    const pt = pointerToCm(e);
+    if (pt) handleUpdateParam(rangeEdit.routine.id, rangeEdit.block.id, end, pt);
+  };
+
+  const handleRangePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    const end = e.button === 0 ? 'left' : e.button === 2 ? 'right' : null;
+    if (!end) return;
+    e.preventDefault();
+    e.currentTarget.setPointerCapture(e.pointerId);
+    rangeDragRef.current = end;
+    setRangeEnd(end, e);
+  };
+  const handleRangePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (rangeDragRef.current) setRangeEnd(rangeDragRef.current, e);
+  };
+  const handleRangePointerUp = () => {
+    rangeDragRef.current = null;
+  };
+
+  const bumpKickout = (dir: number) => {
+    if (!rangeEdit) return;
+    const next = Math.max(0, Math.min(300, rangeEdit.kickoutCm + dir * 10));
+    handleUpdateParam(rangeEdit.routine.id, rangeEdit.block.id, 'kickout', String(next));
+  };
+  const bumpRunup = (dir: number) => {
+    if (!rangeEdit) return;
+    const next = Math.max(5, Math.min(150, rangeEdit.runupCm + dir * 5));
+    handleUpdateParam(rangeEdit.routine.id, rangeEdit.block.id, 'runup', String(next));
+  };
+
+  // mm → % of the field-lines frame
+  const fx = (x: number) => ((x + 4200) / 8400) * 100;
+  const fy = (y: number) => ((y + 2800) / 5600) * 100;
+
+  /* ---------------- preview spec ---------------- */
+
+  /** Middle of a zone in simulator millimetres (where the preview ball starts). */
+  const zoneCenterMm = (situationId: string): [number, number] => {
+    const sit = strategy.situations.find((s) => s.id === situationId);
+    const qs = sit ? [...quartersOf(sit)] : [];
+    if (!qs.length) return [-1500, 300];
+    let su = 0;
+    let sv = 0;
+    qs.forEach((k) => {
+      const [c, r, q] = k.split(',').map(Number);
+      const [u, v] = quarterCentroid(c, r, q);
+      su += u;
+      sv += v;
+    });
+    const u = su / qs.length;
+    const v = sv / qs.length;
+    return [-4200 + (u / gridDims.cols) * 8400, -2800 + (v / gridDims.rows) * 5600];
+  };
+
+  const previewRoutine = preview
+    ? strategy.routines.find((r) => r.id === preview.routineId)
+    : undefined;
+  const previewBlocks = previewRoutine
+    ? preview!.mode === 'block'
+      ? previewRoutine.blocks.filter((b) => b.id === preview!.blockId)
+      : previewRoutine.blocks
+    : [];
+  const previewSpec: PreviewSpec | null =
+    previewRoutine && previewBlocks.length
+      ? {
+          robotId: previewRoutine.robotId,
+          blocks: previewBlocks,
+          ball: zoneCenterMm(previewRoutine.situationId),
+          replay: previewReplay,
+        }
+      : null;
 
   /* ---------------- render ---------------- */
 
@@ -1291,14 +1716,15 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
 
             {/* Interaction layer covers the whole card so edge dots are easy to hit */}
             <div
-              onPointerDown={handleGridPointerDown}
-              onPointerMove={handleGridPointerMove}
-              onPointerUp={handleGridPointerUp}
-              onPointerCancel={handleGridPointerCancel}
+              onPointerDown={rangeEdit ? handleRangePointerDown : handleGridPointerDown}
+              onPointerMove={rangeEdit ? handleRangePointerMove : handleGridPointerMove}
+              onPointerUp={rangeEdit ? handleRangePointerUp : handleGridPointerUp}
+              onPointerCancel={rangeEdit ? handleRangePointerUp : handleGridPointerCancel}
               onPointerLeave={() => setHoverDot(null)}
-              onDoubleClick={handleGridDoubleClick}
+              onDoubleClick={rangeEdit ? undefined : handleGridDoubleClick}
+              onContextMenu={(e) => rangeEdit && e.preventDefault()}
               className={`absolute inset-0 z-10 touch-none ${
-                canCloseOnStart ? 'cursor-pointer' : 'cursor-crosshair'
+                rangeEdit ? 'cursor-cell' : canCloseOnStart ? 'cursor-pointer' : 'cursor-crosshair'
               }`}
             >
               {/* Exact field rectangle: dot (0,0) = top-left corner, (cols,rows) = bottom-right */}
@@ -1337,6 +1763,54 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
                       )
                   )}
                 </svg>
+
+                {/* Defender / GoalKeeper range: guard line + kick-out band + L/R handles */}
+                {rangeEdit && (
+                  <>
+                    <svg
+                      viewBox="-4200 -2800 8400 5600"
+                      preserveAspectRatio="none"
+                      className="absolute inset-0 w-full h-full overflow-visible pointer-events-none z-20"
+                    >
+                      {rangeEdit.kickoutCm > 0 && (
+                        <line
+                          x1={rangeEdit.left[0]}
+                          y1={rangeEdit.left[1]}
+                          x2={rangeEdit.right[0]}
+                          y2={rangeEdit.right[1]}
+                          stroke="#38bdf8"
+                          strokeOpacity={0.18}
+                          strokeWidth={rangeEdit.kickoutCm * 20}
+                          strokeLinecap="round"
+                        />
+                      )}
+                      <line
+                        x1={rangeEdit.left[0]}
+                        y1={rangeEdit.left[1]}
+                        x2={rangeEdit.right[0]}
+                        y2={rangeEdit.right[1]}
+                        stroke="#ffffff"
+                        strokeWidth={2}
+                        strokeDasharray="6 4"
+                        vectorEffect="non-scaling-stroke"
+                      />
+                    </svg>
+                    {(
+                      [
+                        ['L', rangeEdit.left, '#38bdf8'],
+                        ['R', rangeEdit.right, '#f472b6'],
+                      ] as const
+                    ).map(([tag, pt, col]) => (
+                      <div
+                        key={tag}
+                        className="absolute z-30 w-4 h-4 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 bg-[#0F1115] text-[8px] font-bold flex items-center justify-center pointer-events-none"
+                        style={{ left: `${fx(pt[0])}%`, top: `${fy(pt[1])}%`, borderColor: col, color: col }}
+                      >
+                        {tag}
+                      </div>
+                    ))}
+                  </>
+                )}
 
                 {/* Dot lattice — includes the field boundary and halfway line */}
                 {Array.from({ length: ptRows }).map((_, r) =>
@@ -1477,29 +1951,132 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
               </div>
             </div>
 
-            <div
-              className="absolute z-20 flex flex-col items-center pointer-events-none transition-all duration-300"
-              style={{ left: '42%', top: '46%' }}
-            >
-              <div className="w-4 h-4 rounded-full border-2 border-[#fabc4d] bg-white flex items-center justify-center shadow-[0_0_8px_#fabc4d]">
-                <div className="w-1 h-1 bg-[#111317] rounded-full" />
-              </div>
-              <span className="text-[9px] font-bold text-white tracking-tight mt-0.5 bg-[#111317]/80 px-1">
-                Ball
-              </span>
-            </div>
+            {/* Live preview of the selected block / stack (real simulation engine) */}
+            <BlockPreview
+              spec={previewSpec}
+              box={{
+                left: FIELD_INSET_X,
+                top: FIELD_INSET_Y,
+                width: 100 - 2 * FIELD_INSET_X,
+                height: 100 - 2 * FIELD_INSET_Y,
+              }}
+            />
+          </div>
 
-            <div
-              className="absolute z-20 flex items-center gap-1 pointer-events-none transition-all duration-300"
-              style={{ left: '38%', top: '68%' }}
-            >
-              <div className="w-4 h-4 bg-[#fabc4d] text-[#111317] font-bold text-[9px] flex items-center justify-center rounded-full shadow-xs">
-                1
+          {/* Range-edit banner (Defender / GoalKeeper selected) */}
+          {rangeEdit && (
+            <div className="mt-2 px-2.5 py-2 bg-[#0c1a24] border border-[#38bdf8]/60 text-[10px] font-mono text-[#bae6fd] space-y-1.5">
+              <div className="flex items-center justify-between gap-2">
+                <span className="flex items-center gap-1.5 font-bold uppercase tracking-wider text-[#38bdf8]">
+                  <Crosshair className="w-3.5 h-3.5" />
+                  {rangeEdit.label} range · Robot {rangeEdit.routine.robotId}
+                </span>
+                <button
+                  onClick={() => setEditingRangeFor(null)}
+                  className="px-2 py-0.5 bg-[#38bdf8] text-[#0F1115] font-bold uppercase cursor-pointer"
+                >
+                  Done
+                </button>
               </div>
-              <span className="text-[9px] font-bold text-[#fabc4d] bg-[#111317]/80 px-1">
-                Robot #1
-              </span>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span>
+                  <span className="text-[#38bdf8] font-bold">Left-click</span> = left end ·{' '}
+                  <span className="text-[#f472b6] font-bold">Right-click</span> = right end (drag
+                  to fine-tune)
+                </span>
+                <span className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                  {(
+                    [
+                      ['Kick-out', rangeEdit.kickoutCm, bumpKickout, 10],
+                      ['Run-up', rangeEdit.runupCm, bumpRunup, 5],
+                    ] as const
+                  ).map(([name, value, bump, stepCm]) => (
+                    <span key={name} className="flex items-center gap-1">
+                      {name}
+                      <button
+                        onClick={() => bump(-1)}
+                        className="px-1 py-0.5 border border-[#38bdf8]/50 hover:bg-[#38bdf8]/20 cursor-pointer"
+                        title={`-${stepCm} cm`}
+                      >
+                        <ChevronLeft className="w-3 h-3" />
+                      </button>
+                      <span className="min-w-[3.25rem] text-center text-white font-bold">{value} cm</span>
+                      <button
+                        onClick={() => bump(1)}
+                        className="px-1 py-0.5 border border-[#38bdf8]/50 hover:bg-[#38bdf8]/20 cursor-pointer"
+                        title={`+${stepCm} cm`}
+                      >
+                        <ChevronRight className="w-3 h-3" />
+                      </button>
+                    </span>
+                  ))}
+                </span>
+              </div>
             </div>
+          )}
+
+          {/* Preview controls */}
+          <div className="mt-2 flex items-center justify-between gap-2 px-2.5 py-1.5 bg-[#0F1115] border border-[#2D3139] text-[10px] font-mono text-[#8E95A5]">
+            {previewSpec && previewRoutine ? (
+              <>
+                <span className="flex items-center gap-1.5 min-w-0">
+                  <Eye className="w-3.5 h-3.5 text-[#38bdf8] shrink-0" />
+                  <span className="truncate">
+                    <span className="text-[#bae6fd] font-bold">Robot {previewRoutine.robotId}</span>
+                    {' · '}
+                    {preview?.mode === 'stack'
+                      ? `whole stack (${previewRoutine.blocks.length})`
+                      : BLOCK_DEFS[previewSpec.blocks[0].type as BlockType]?.label}
+                  </span>
+                </span>
+                <div className="flex items-center gap-1 shrink-0">
+                  <button
+                    onClick={() =>
+                      preview?.blockId &&
+                      setPreview({ ...preview, mode: 'block' })
+                    }
+                    disabled={!preview?.blockId}
+                    className={`px-1.5 py-0.5 font-bold uppercase border cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed ${
+                      preview?.mode === 'block'
+                        ? 'border-[#38bdf8] text-[#38bdf8]'
+                        : 'border-[#2D3139] hover:text-white'
+                    }`}
+                  >
+                    Block
+                  </button>
+                  <button
+                    onClick={() => preview && setPreview({ ...preview, mode: 'stack' })}
+                    className={`px-1.5 py-0.5 font-bold uppercase border cursor-pointer ${
+                      preview?.mode === 'stack'
+                        ? 'border-[#38bdf8] text-[#38bdf8]'
+                        : 'border-[#2D3139] hover:text-white'
+                    }`}
+                  >
+                    Stack
+                  </button>
+                  <button
+                    onClick={() => setPreviewReplay((n) => n + 1)}
+                    title="Replay"
+                    className="px-1.5 py-0.5 border border-[#2D3139] hover:text-white cursor-pointer"
+                  >
+                    <RotateCw className="w-3 h-3" />
+                  </button>
+                  <button
+                    onClick={() => setPreview(null)}
+                    title="Hide preview"
+                    className="px-1.5 py-0.5 border border-[#2D3139] hover:text-red-400 cursor-pointer"
+                  >
+                    <X className="w-3 h-3" />
+                  </button>
+                </div>
+              </>
+            ) : (
+              <span className="flex items-center gap-1.5">
+                <Eye className="w-3.5 h-3.5" />
+                Place or click a block to preview its motion here · click a robot hat for the whole
+                stack
+              </span>
+            )}
           </div>
 
           {/* Outline-in-progress bar (corner mode) */}
@@ -1532,6 +2109,11 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
             <div className="flex items-center justify-between mb-2">
               <span className="text-xs font-bold text-[#8E95A5] uppercase tracking-wider">
                 ZONES ({strategy.situations.length})
+                {draggingFromWorkspace && (
+                  <span className="ml-2 normal-case tracking-normal font-normal text-[#38bdf8]">
+                    ← drop a stack on a zone to copy it
+                  </span>
+                )}
               </span>
               <button
                 onClick={handleAddZone}
@@ -1549,14 +2131,22 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
                 return (
                   <div
                     key={sit.id}
+                    data-zone-drop={sit.id}
                     onClick={() => handleSelectZone(sit.id)}
-                    className={`flex items-center gap-2 px-2 py-1.5 border cursor-pointer transition-colors ${
-                      isActive
+                    className={`relative flex items-center gap-2 px-2 py-1.5 border cursor-pointer transition-colors ${
+                      hint?.kind === 'zone' && hint.zoneId === sit.id
+                        ? 'bg-[#0c1a24] ring-2 ring-[#38bdf8]'
+                        : isActive
                         ? 'bg-[#22252A]'
                         : 'bg-[#0F1115] border-[#2D3139] hover:bg-[#1e2024]'
-                    }`}
+                    } ${draggingFromWorkspace && !(hint?.kind === 'zone' && hint.zoneId === sit.id) ? 'border-dashed border-[#38bdf8]/50' : ''}`}
                     style={isActive ? { borderColor: color } : undefined}
                   >
+                    {hint?.kind === 'zone' && hint.zoneId === sit.id && (
+                      <span className="absolute right-1 -top-2.5 px-1 bg-[#38bdf8] text-[#0F1115] text-[9px] font-bold uppercase">
+                        Drop to copy
+                      </span>
+                    )}
                     <span className="w-2.5 h-2.5 shrink-0" style={{ backgroundColor: color }} />
                     {isActive ? (
                       <input
@@ -1833,6 +2423,13 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
           </div>
         </div>
       </div>
+
+      {/* Copy / paste feedback */}
+      {toast && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[110] px-3 py-1.5 bg-[#0c1a24] border border-[#38bdf8] text-[#bae6fd] text-xs font-mono font-bold shadow-2xl pointer-events-none">
+          {toast}
+        </div>
+      )}
 
       {/* Floating drag ghost */}
       {renderGhost()}
