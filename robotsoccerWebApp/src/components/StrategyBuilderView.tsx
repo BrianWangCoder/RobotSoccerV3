@@ -353,6 +353,9 @@ type ZoneMode = 'replace' | 'add' | 'erase';
 const FIELD_INSET_X = (20 / 400) * 100; // %
 const FIELD_INSET_Y = (20 / 300) * 100; // %
 
+/** One colour per zone, cycled by the zone's position in the list. */
+const ZONE_COLORS = ['#fabc4d', '#38bdf8', '#f472b6', '#a78bfa', '#34d399', '#fb923c', '#f87171'];
+
 const keyOf = ([c, r]: Pt) => `${c},${r}`;
 const samePt = (a: Pt, b: Pt) => a[0] === b[0] && a[1] === b[1];
 
@@ -496,6 +499,63 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
   const situationNameFor = (situationId: string) =>
     strategy.situations.find((s) => s.id === situationId)?.name ?? activeSituation.name;
 
+  type Situation = StrategyConfig['situations'][number];
+
+  const colorFor = (situationId: string) => {
+    const i = strategy.situations.findIndex((s) => s.id === situationId);
+    return ZONE_COLORS[(i < 0 ? 0 : i) % ZONE_COLORS.length];
+  };
+  const activeColor = colorFor(activeSituation.id);
+
+  /* ---------------- zone (situation) management ---------------- */
+
+  const handleSelectZone = (id: string) => {
+    if (id !== strategy.activeSituationId)
+      onUpdateStrategy({ ...strategy, activeSituationId: id });
+  };
+
+  const handleAddZone = () => {
+    const nums = strategy.situations
+      .map((s) => parseInt(s.name.replace(/\D/g, ''), 10))
+      .filter((n) => !isNaN(n));
+    const n = Math.max(0, ...nums) + 1;
+    const zone = {
+      ...activeSituation,
+      id: newId('sit'),
+      name: `Situation ${n}`,
+      priority: 'Medium Priority',
+      selectedDots: [],
+      minCol: 0,
+      maxCol: 0,
+      minRow: 0,
+      maxRow: 0,
+    } as Situation;
+    onUpdateStrategy({
+      ...strategy,
+      situations: [...strategy.situations, zone],
+      activeSituationId: zone.id,
+    });
+  };
+
+  const handleDeleteZone = (id: string) => {
+    if (strategy.situations.length <= 1) return;
+    const remaining = strategy.situations.filter((s) => s.id !== id);
+    onUpdateStrategy({
+      ...strategy,
+      situations: remaining,
+      routines: strategy.routines.filter((r) => r.situationId !== id),
+      activeSituationId:
+        id === activeSituation.id ? remaining[0].id : strategy.activeSituationId,
+    });
+  };
+
+  const handleRenameZone = (id: string, name: string) => {
+    onUpdateStrategy({
+      ...strategy,
+      situations: strategy.situations.map((s) => (s.id === id ? { ...s, name } : s)),
+    });
+  };
+
   // Grid resolution = number of cells; dots sit on cell corners, so there are cols+1 × rows+1 dots
   // running from field edge to field edge (incl. the halfway line).
   const gridDims =
@@ -577,7 +637,7 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
       return;
     }
 
-    // h.kind === 'routines'
+    // h.kind === 'routines' — index is relative to the active zone's stacks only
     const routines = [...s.routines];
     let moving: RobotRoutine;
     if (payload.kind === 'routine') {
@@ -594,7 +654,14 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
     } else {
       return;
     }
-    routines.splice(Math.min(h.index, routines.length), 0, moving);
+    const ctx = routines.filter((r) => r.situationId === s.activeSituationId);
+    const insertAt =
+      h.index < ctx.length
+        ? routines.indexOf(ctx[h.index])
+        : ctx.length
+        ? routines.indexOf(ctx[ctx.length - 1]) + 1
+        : routines.length;
+    routines.splice(insertAt, 0, moving);
     commit(routines);
     setSelectedRobotForAdd(moving.robotId);
   };
@@ -841,9 +908,35 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
     : null;
   const pathKeys = new Set(drawPath?.map(keyOf) ?? []);
 
-  // Real zone outline (traced shape, not a bounding box)
+  // Real zone outlines (traced shapes) for every zone; the active one uses the live preview
   const shownDots = previewDots ?? new Set(activeSituation.selectedDots);
-  const zonePath = zonePathFor(shownDots, gridDims.cols, gridDims.rows);
+  const zoneShapes = strategy.situations.map((sit) => {
+    const isActive = sit.id === activeSituation.id;
+    return {
+      sit,
+      isActive,
+      color: colorFor(sit.id),
+      path: zonePathFor(
+        isActive ? shownDots : new Set(sit.selectedDots),
+        gridDims.cols,
+        gridDims.rows
+      ),
+    };
+  });
+  // Inactive zones draw first so the active zone sits on top
+  const orderedShapes = [
+    ...zoneShapes.filter((z) => !z.isActive),
+    ...zoneShapes.filter((z) => z.isActive),
+  ];
+
+  // Colour for dots that belong to other (inactive) zones
+  const otherDotColor = new Map<string, string>();
+  zoneShapes.forEach((z) => {
+    if (z.isActive) return;
+    z.sit.selectedDots.forEach((k) => {
+      if (!otherDotColor.has(k)) otherDotColor.set(k, z.color);
+    });
+  });
 
   /* ---------------- click-to-add (still supported) ---------------- */
 
@@ -929,7 +1022,10 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
   };
 
   const handleResetWorkspace = () => {
-    onUpdateStrategy({ ...strategy, routines: [] });
+    onUpdateStrategy({
+      ...strategy,
+      routines: strategy.routines.filter((r) => r.situationId !== activeSituation.id),
+    });
   };
 
   const handleChangePriority = (
@@ -949,7 +1045,8 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
     onUpdateStrategy({ ...strategy, resolution: res });
   };
 
-  const totalBlocks = strategy.routines.reduce((acc, r) => acc + r.blocks.length, 0);
+  const activeRoutines = strategy.routines.filter((r) => r.situationId === activeSituation.id);
+  const totalBlocks = activeRoutines.reduce((acc, r) => acc + r.blocks.length, 0);
 
   /* ---------------- render helpers ---------------- */
 
@@ -979,7 +1076,7 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
     />
   );
 
-  const visibleRoutines = strategy.routines.filter((r) => r.id !== hiddenRoutineId);
+  const visibleRoutines = activeRoutines.filter((r) => r.id !== hiddenRoutineId);
 
   const renderRoutine = (routine: RobotRoutine) => {
     const isSelectedRobot = selectedRobotForAdd === routine.robotId;
@@ -1140,7 +1237,7 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
                 SOCCER FIELD
               </span>
             </div>
-            <div className="text-xs font-bold text-[#fabc4d] tracking-wide">
+            <div className="text-xs font-bold tracking-wide" style={{ color: activeColor }}>
               Zone: {activeSituation.name}
             </div>
           </div>
@@ -1183,26 +1280,31 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
                   bottom: `${FIELD_INSET_Y}%`,
                 }}
               >
-                {/* Traced zone shape */}
-                {zonePath && (
-                  <svg
-                    viewBox={`0 0 ${gridDims.cols} ${gridDims.rows}`}
-                    preserveAspectRatio="none"
-                    className="absolute inset-0 w-full h-full overflow-visible pointer-events-none"
-                  >
-                    <path
-                      d={zonePath}
-                      fill="rgba(250,188,77,0.10)"
-                      fillRule="nonzero"
-                      stroke="#fabc4d"
-                      strokeOpacity={previewDots ? 0.6 : 1}
-                      strokeWidth={2}
-                      strokeDasharray="6 4"
-                      strokeLinejoin="round"
-                      vectorEffect="non-scaling-stroke"
-                    />
-                  </svg>
-                )}
+                {/* Traced zone shapes — every zone stays on the grid */}
+                <svg
+                  viewBox={`0 0 ${gridDims.cols} ${gridDims.rows}`}
+                  preserveAspectRatio="none"
+                  className="absolute inset-0 w-full h-full overflow-visible pointer-events-none"
+                >
+                  {orderedShapes.map(
+                    (z) =>
+                      z.path && (
+                        <path
+                          key={z.sit.id}
+                          d={z.path}
+                          fill={z.color}
+                          fillOpacity={z.isActive ? 0.12 : 0.06}
+                          fillRule="nonzero"
+                          stroke={z.color}
+                          strokeOpacity={z.isActive ? (previewDots ? 0.6 : 1) : 0.45}
+                          strokeWidth={z.isActive ? 2 : 1.5}
+                          strokeDasharray={z.isActive ? '6 4' : '3 4'}
+                          strokeLinejoin="round"
+                          vectorEffect="non-scaling-stroke"
+                        />
+                      )
+                  )}
+                </svg>
 
                 {/* Dot lattice — includes the field boundary and halfway line */}
                 {Array.from({ length: ptRows }).map((_, r) =>
@@ -1210,6 +1312,14 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
                     const key = `${c},${r}`;
                     const isSelected = shownDots.has(key);
                     const onPath = pathKeys.has(key);
+                    const otherColor = otherDotColor.get(key);
+                    const dotStyle: React.CSSProperties | undefined = onPath
+                      ? undefined
+                      : isSelected
+                      ? { backgroundColor: activeColor, boxShadow: `0 0 6px ${activeColor}` }
+                      : otherColor
+                      ? { backgroundColor: otherColor, opacity: 0.55 }
+                      : undefined;
                     return (
                       <div
                         key={key}
@@ -1221,13 +1331,14 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
                         title={`Grid Coordinate: [${c}, ${r}]`}
                       >
                         <div
+                          style={dotStyle}
                           className={`w-1.5 h-1.5 transition-all duration-100 ${
                             onPath
-                              ? 'bg-white shadow-[0_0_6px_#fabc4d] scale-150'
+                              ? 'bg-white shadow-[0_0_6px_#ffffff] scale-150'
                               : isSelected
-                              ? `bg-[#fabc4d] shadow-[0_0_6px_#fabc4d] scale-125 ${
-                                  previewDots ? 'opacity-70' : ''
-                                }`
+                              ? `scale-125 ${previewDots ? 'opacity-70' : ''}`
+                              : otherColor
+                              ? ''
                               : 'bg-[#2D3139] group-hover:bg-[#8E95A5]'
                           }`}
                         />
@@ -1269,20 +1380,36 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
                   </svg>
                 )}
 
-                {/* Zone label anchored at the shape's top-left */}
-                {!drawPath && activeSituation.selectedDots.length > 0 && (
-                  <div
-                    className="absolute pointer-events-none flex items-center gap-1.5 text-[10px] font-bold text-[#fabc4d] bg-[#0F1115]/90 px-1.5 py-0.5 border border-[#fabc4d]/50 whitespace-nowrap z-20"
-                    style={{
-                      left: `${(activeSituation.minCol / gridDims.cols) * 100}%`,
-                      top: `${(activeSituation.minRow / gridDims.rows) * 100}%`,
-                      transform: 'translate(-4px, calc(-100% - 6px))',
-                    }}
-                  >
-                    <span className="w-1.5 h-1.5 bg-[#fabc4d] rounded-full" />
-                    <span>{activeSituation.name}</span>
-                  </div>
-                )}
+                {/* Zone labels anchored at each shape's top-left — click one to select that zone */}
+                {!drawPath &&
+                  orderedShapes.map(
+                    ({ sit, color, isActive }) =>
+                      sit.selectedDots.length > 0 && (
+                        <div
+                          key={sit.id}
+                          onPointerDown={(e) => {
+                            e.stopPropagation();
+                            handleSelectZone(sit.id);
+                          }}
+                          className={`absolute flex items-center gap-1.5 text-[10px] font-bold bg-[#0F1115]/90 px-1.5 py-0.5 border whitespace-nowrap cursor-pointer ${
+                            isActive ? 'z-30' : 'z-20 opacity-70 hover:opacity-100'
+                          }`}
+                          style={{
+                            color,
+                            borderColor: isActive ? color : `${color}80`,
+                            left: `${(sit.minCol / gridDims.cols) * 100}%`,
+                            top: `${(sit.minRow / gridDims.rows) * 100}%`,
+                            transform: 'translate(-4px, calc(-100% - 6px))',
+                          }}
+                        >
+                          <span
+                            className="w-1.5 h-1.5 rounded-full"
+                            style={{ backgroundColor: color }}
+                          />
+                          <span>{sit.name}</span>
+                        </div>
+                      )
+                  )}
               </div>
             </div>
 
@@ -1308,6 +1435,72 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
               <span className="text-[9px] font-bold text-[#fabc4d] bg-[#111317]/80 px-1">
                 Robot #1
               </span>
+            </div>
+          </div>
+
+          {/* Zone list */}
+          <div className="mt-4">
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-xs font-bold text-[#8E95A5] uppercase tracking-wider">
+                ZONES ({strategy.situations.length})
+              </span>
+              <button
+                onClick={handleAddZone}
+                className="flex items-center gap-1 px-2.5 py-1 bg-[#1e2024] border border-[#2D3139] hover:border-[#fabc4d] text-[#fabc4d] text-[10px] font-bold uppercase tracking-wider transition-colors cursor-pointer"
+              >
+                <Plus className="w-3 h-3" />
+                <span>NEW ZONE</span>
+              </button>
+            </div>
+            <div className="space-y-1">
+              {strategy.situations.map((sit) => {
+                const isActive = sit.id === activeSituation.id;
+                const color = colorFor(sit.id);
+                const robots = strategy.routines.filter((r) => r.situationId === sit.id).length;
+                return (
+                  <div
+                    key={sit.id}
+                    onClick={() => handleSelectZone(sit.id)}
+                    className={`flex items-center gap-2 px-2 py-1.5 border cursor-pointer transition-colors ${
+                      isActive
+                        ? 'bg-[#22252A]'
+                        : 'bg-[#0F1115] border-[#2D3139] hover:bg-[#1e2024]'
+                    }`}
+                    style={isActive ? { borderColor: color } : undefined}
+                  >
+                    <span className="w-2.5 h-2.5 shrink-0" style={{ backgroundColor: color }} />
+                    {isActive ? (
+                      <input
+                        type="text"
+                        value={sit.name}
+                        onChange={(e) => handleRenameZone(sit.id, e.target.value)}
+                        onClick={(e) => e.stopPropagation()}
+                        className="flex-1 min-w-0 bg-transparent text-xs font-bold font-mono focus:outline-hidden select-text"
+                        style={{ color }}
+                      />
+                    ) : (
+                      <span className="flex-1 min-w-0 truncate text-xs font-bold text-[#e2e2e8]">
+                        {sit.name}
+                      </span>
+                    )}
+                    <span className="text-[10px] font-mono text-[#8E95A5] shrink-0">
+                      {sit.selectedDots.length} dots · {robots} bots
+                    </span>
+                    {strategy.situations.length > 1 && (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleDeleteZone(sit.id);
+                        }}
+                        className="text-[#8E95A5] hover:text-red-400 p-0.5 shrink-0"
+                        title="Delete zone and its robot stacks"
+                      >
+                        <X className="w-3 h-3" />
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           </div>
 
@@ -1407,7 +1600,7 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
             <div className="text-[11px] font-mono text-[#8E95A5]">
               ACTIVE ROBOTS:{' '}
               <span className="text-white font-bold">
-                {strategy.routines.length} CONFIGURED ({totalBlocks} BLOCKS)
+                {activeRoutines.length} CONFIGURED ({totalBlocks} BLOCKS)
               </span>
             </div>
           </div>
