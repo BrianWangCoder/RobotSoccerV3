@@ -341,12 +341,17 @@ const HatView: React.FC<HatViewProps> = ({
     )}
   </div>
 );
+
 /* ------------------------------------------------------------------ */
 /* Zone drawing helpers                                                */
 /* ------------------------------------------------------------------ */
 
-type Pt = [number, number]; // [col, row]
+type Pt = [number, number]; // [col, row] — lattice point, (0,0) = top-left field corner
 type ZoneMode = 'replace' | 'add' | 'erase';
+
+/** Field outline inside the 400x300 SVG is x 20..380, y 20..280 → dots sit exactly on it. */
+const FIELD_INSET_X = (20 / 400) * 100; // %
+const FIELD_INSET_Y = (20 / 300) * 100; // %
 
 const keyOf = ([c, r]: Pt) => `${c},${r}`;
 const samePt = (a: Pt, b: Pt) => a[0] === b[0] && a[1] === b[1];
@@ -389,19 +394,81 @@ const pointInPolygon = (x: number, y: number, poly: Pt[]) => {
   return inside;
 };
 
-/** Boundary dots + (if closed) every dot enclosed by the drawn outline. */
-const enclosedDots = (path: Pt[], cols: number, rows: number, closed: boolean) => {
+/** Boundary dots + (if closed) every dot enclosed by the drawn outline. ptCols/ptRows = dot counts. */
+const enclosedDots = (path: Pt[], ptCols: number, ptRows: number, closed: boolean) => {
   const out = new Set<string>(path.map(keyOf));
   if (!closed || path.length < 3) return out;
   rasterLine(path[path.length - 1], path[0]).forEach((p) => out.add(keyOf(p)));
-  for (let r = 0; r < rows; r++) {
-    for (let c = 0; c < cols; c++) {
+  for (let r = 0; r < ptRows; r++) {
+    for (let c = 0; c < ptCols; c++) {
       if (pointInPolygon(c, r, path)) out.add(keyOf([c, r]));
     }
   }
   return out;
 };
 
+/**
+ * Turns a set of selected dots into the outline of the actual shape (SVG path in lattice units).
+ * Each grid cell is filled when ≥3 of its 4 corner dots are selected (3 → triangle, so diagonal
+ * edges stay diagonal). Shared internal edges cancel out, leaving only the true boundary, which is
+ * then chained into closed loops. cols/rows = number of cells.
+ */
+const zonePathFor = (dots: Set<string>, cols: number, rows: number): string => {
+  const has = (c: number, r: number) => dots.has(`${c},${r}`);
+  const edges = new Map<string, [Pt, Pt]>();
+
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      // Clockwise on screen; filtering keeps the winding consistent for triangles too.
+      const corners: Pt[] = [
+        [c, r],
+        [c + 1, r],
+        [c + 1, r + 1],
+        [c, r + 1],
+      ];
+      const poly = corners.filter(([x, y]) => has(x, y));
+      if (poly.length < 3) continue;
+      for (let i = 0; i < poly.length; i++) {
+        const a = poly[i];
+        const b = poly[(i + 1) % poly.length];
+        const rev = `${keyOf(b)}>${keyOf(a)}`;
+        if (edges.has(rev)) edges.delete(rev);
+        else edges.set(`${keyOf(a)}>${keyOf(b)}`, [a, b]);
+      }
+    }
+  }
+
+  const out = new Map<string, Pt[]>();
+  edges.forEach(([a, b]) => {
+    const k = keyOf(a);
+    if (!out.has(k)) out.set(k, []);
+    out.get(k)!.push(b);
+  });
+  const take = (k: string): Pt | undefined => {
+    const list = out.get(k);
+    if (!list) return undefined;
+    const p = list.pop();
+    if (!list.length) out.delete(k);
+    return p;
+  };
+
+  let d = '';
+  while (out.size) {
+    const startKey = out.keys().next().value as string;
+    const [sc, sr] = startKey.split(',').map(Number);
+    d += `M${sc} ${sr}`;
+    let cur = startKey;
+    for (let guard = 0; guard < 100000; guard++) {
+      const nxt = take(cur);
+      if (!nxt) break;
+      cur = keyOf(nxt);
+      if (cur === startKey) break;
+      d += `L${nxt[0]} ${nxt[1]}`;
+    }
+    d += 'Z';
+  }
+  return d;
+};
 
 /* ------------------------------------------------------------------ */
 /* Main view                                                           */
@@ -429,13 +496,16 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
   const situationNameFor = (situationId: string) =>
     strategy.situations.find((s) => s.id === situationId)?.name ?? activeSituation.name;
 
-  // Grid resolution dimensions
+  // Grid resolution = number of cells; dots sit on cell corners, so there are cols+1 × rows+1 dots
+  // running from field edge to field edge (incl. the halfway line).
   const gridDims =
     strategy.resolution === 'Coarse (8x6)'
       ? { cols: 8, rows: 6 }
       : strategy.resolution === 'Fine (16x12)'
       ? { cols: 16, rows: 12 }
       : { cols: 12, rows: 9 };
+  const ptCols = gridDims.cols + 1;
+  const ptRows = gridDims.rows + 1;
 
   const [selectedRobotForAdd, setSelectedRobotForAdd] = useState<number>(1);
   const [sliderVal, setSliderVal] = useState<number>(1); // 0 = Coarse, 1 = Med, 2 = Fine
@@ -654,11 +724,9 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
     );
   };
 
-  /* ---------------- field interactions ---------------- */
+  /* ---------------- zone drawing ---------------- */
 
-    /* ---------------- zone drawing ---------------- */
-
-  const gridRef = useRef<HTMLDivElement>(null);
+  const fieldRef = useRef<HTMLDivElement>(null); // exact field rectangle (dot lattice frame)
   const pathRef = useRef<Pt[] | null>(null);
   const closedRef = useRef(false);
   const zoneModeRef = useRef<ZoneMode>('replace');
@@ -698,15 +766,16 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
     return new Set([...current].filter((k) => !drawn.has(k)));
   };
 
+  /** Nearest lattice dot to the pointer (works slightly outside the field too, for edge dots). */
   const dotAt = (e: React.PointerEvent): Pt | null => {
-    const el = gridRef.current;
+    const el = fieldRef.current;
     if (!el) return null;
     const r = el.getBoundingClientRect();
-    const c = Math.floor(((e.clientX - r.left) / r.width) * gridDims.cols);
-    const row = Math.floor(((e.clientY - r.top) / r.height) * gridDims.rows);
+    const c = Math.round(((e.clientX - r.left) / r.width) * gridDims.cols);
+    const row = Math.round(((e.clientY - r.top) / r.height) * gridDims.rows);
     return [
-      Math.max(0, Math.min(gridDims.cols - 1, c)),
-      Math.max(0, Math.min(gridDims.rows - 1, row)),
+      Math.max(0, Math.min(gridDims.cols, c)),
+      Math.max(0, Math.min(gridDims.rows, row)),
     ];
   };
 
@@ -759,18 +828,22 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
     }
     // Auto-close on release if it's at least a triangle
     const closed = closedRef.current || path.length >= 3;
-    const drawn = enclosedDots(path, gridDims.cols, gridDims.rows, closed);
+    const drawn = enclosedDots(path, ptCols, ptRows, closed);
     commitDots([...mergeZone(drawn, zoneModeRef.current)]);
   };
 
   // Live preview while drawing
   const previewDots = drawPath
     ? mergeZone(
-        enclosedDots(drawPath, gridDims.cols, gridDims.rows, drawClosed || drawPath.length >= 3),
+        enclosedDots(drawPath, ptCols, ptRows, drawClosed || drawPath.length >= 3),
         zoneModeRef.current
       )
     : null;
   const pathKeys = new Set(drawPath?.map(keyOf) ?? []);
+
+  // Real zone outline (traced shape, not a bounding box)
+  const shownDots = previewDots ?? new Set(activeSituation.selectedDots);
+  const zonePath = zonePathFor(shownDots, gridDims.cols, gridDims.rows);
 
   /* ---------------- click-to-add (still supported) ---------------- */
 
@@ -1072,7 +1145,7 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
             </div>
           </div>
 
-          <div className="mt-3 relative bg-[#131B18] border border-[#2D3139] aspect-4/3 w-full p-2 flex items-center justify-center overflow-hidden">
+          <div className="mt-3 relative bg-[#131B18] border border-[#2D3139] aspect-4/3 w-full overflow-hidden">
             <svg
               viewBox="0 0 400 300"
               className="absolute inset-0 w-full h-full stroke-[#1E3F30] stroke-[1.2] fill-none pointer-events-none"
@@ -1091,108 +1164,130 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
               <rect x="380" y="115" width="12" height="70" stroke="#2D3139" />
             </svg>
 
-                        {/* Interactive Grid Dots Matrix — click to toggle, drag to draw an outline */}
+            {/* Interaction layer covers the whole card so edge dots are easy to hit */}
             <div
-              ref={gridRef}
               onPointerDown={handleGridPointerDown}
               onPointerMove={handleGridPointerMove}
               onPointerUp={handleGridPointerUp}
               onPointerCancel={handleGridPointerUp}
-              className="absolute inset-6 grid cursor-crosshair touch-none z-10"
-              style={{
-                gridTemplateColumns: `repeat(${gridDims.cols}, minmax(0, 1fr))`,
-                gridTemplateRows: `repeat(${gridDims.rows}, minmax(0, 1fr))`,
-              }}
+              className="absolute inset-0 z-10 cursor-crosshair touch-none"
             >
-              {Array.from({ length: gridDims.rows }).map((_, r) =>
-                Array.from({ length: gridDims.cols }).map((_, c) => {
-                  const key = `${c},${r}`;
-                  const isSelected = previewDots
-                    ? previewDots.has(key)
-                    : activeSituation.selectedDots.includes(key);
-                  const onPath = pathKeys.has(key);
-                  return (
-                    <div
-                      key={key}
-                      className="flex items-center justify-center group"
-                      title={`Grid Coordinate: [${c}, ${r}]`}
-                    >
-                      <div
-                        className={`w-1.5 h-1.5 transition-all duration-100 ${
-                          onPath
-                            ? 'bg-white shadow-[0_0_6px_#fabc4d] scale-150'
-                            : isSelected
-                            ? `bg-[#fabc4d] shadow-[0_0_6px_#fabc4d] scale-125 ${
-                                previewDots ? 'opacity-70' : ''
-                              }`
-                            : 'bg-[#2D3139] group-hover:bg-[#8E95A5]'
-                        }`}
-                      />
-                    </div>
-                  );
-                })
-              )}
-            </div>
-
-            {/* Live outline while drawing */}
-            {drawPath && drawPath.length > 1 && (
-              <div className="absolute inset-6 pointer-events-none z-20">
-                <svg
-                  viewBox={`0 0 ${gridDims.cols} ${gridDims.rows}`}
-                  preserveAspectRatio="none"
-                  className="w-full h-full overflow-visible"
-                >
-                  <polyline
-                    points={drawPath.map(([c, r]) => `${c + 0.5},${r + 0.5}`).join(' ')}
-                    fill={drawClosed ? 'rgba(250,188,77,0.12)' : 'none'}
-                    stroke="#fabc4d"
-                    strokeWidth={2}
-                    strokeLinejoin="round"
-                    strokeLinecap="round"
-                    vectorEffect="non-scaling-stroke"
-                  />
-                  {!drawClosed && drawPath.length >= 3 && (
-                    <line
-                      x1={drawPath[drawPath.length - 1][0] + 0.5}
-                      y1={drawPath[drawPath.length - 1][1] + 0.5}
-                      x2={drawPath[0][0] + 0.5}
-                      y2={drawPath[0][1] + 0.5}
+              {/* Exact field rectangle: dot (0,0) = top-left corner, (cols,rows) = bottom-right */}
+              <div
+                ref={fieldRef}
+                className="absolute"
+                style={{
+                  left: `${FIELD_INSET_X}%`,
+                  right: `${FIELD_INSET_X}%`,
+                  top: `${FIELD_INSET_Y}%`,
+                  bottom: `${FIELD_INSET_Y}%`,
+                }}
+              >
+                {/* Traced zone shape */}
+                {zonePath && (
+                  <svg
+                    viewBox={`0 0 ${gridDims.cols} ${gridDims.rows}`}
+                    preserveAspectRatio="none"
+                    className="absolute inset-0 w-full h-full overflow-visible pointer-events-none"
+                  >
+                    <path
+                      d={zonePath}
+                      fill="rgba(250,188,77,0.10)"
+                      fillRule="nonzero"
                       stroke="#fabc4d"
-                      strokeOpacity={0.5}
-                      strokeWidth={1.5}
-                      strokeDasharray="4 4"
+                      strokeOpacity={previewDots ? 0.6 : 1}
+                      strokeWidth={2}
+                      strokeDasharray="6 4"
+                      strokeLinejoin="round"
                       vectorEffect="non-scaling-stroke"
                     />
-                  )}
-                </svg>
-              </div>
-            )}
+                  </svg>
+                )}
 
-            {/* Zone bounding box — aligned to the dot grid */}
-            {!drawPath && activeSituation.selectedDots.length > 0 && (
-              <div className="absolute inset-6 pointer-events-none">
-                <div
-                  className="absolute border-2 border-dashed border-[#fabc4d] transition-all duration-200"
-                  style={{
-                    left: `${(activeSituation.minCol / gridDims.cols) * 100}%`,
-                    top: `${(activeSituation.minRow / gridDims.rows) * 100}%`,
-                    width: `${
-                      ((activeSituation.maxCol - activeSituation.minCol + 1) / gridDims.cols) * 100
-                    }%`,
-                    height: `${
-                      ((activeSituation.maxRow - activeSituation.minRow + 1) / gridDims.rows) * 100
-                    }%`,
-                  }}
-                >
-                  <div className="absolute -top-5 left-0 flex items-center gap-1.5 text-[10px] font-bold text-[#fabc4d] bg-[#0F1115]/90 px-1.5 py-0.5 border border-[#fabc4d]/50 whitespace-nowrap">
+                {/* Dot lattice — includes the field boundary and halfway line */}
+                {Array.from({ length: ptRows }).map((_, r) =>
+                  Array.from({ length: ptCols }).map((_, c) => {
+                    const key = `${c},${r}`;
+                    const isSelected = shownDots.has(key);
+                    const onPath = pathKeys.has(key);
+                    return (
+                      <div
+                        key={key}
+                        className="absolute w-3 h-3 -translate-x-1/2 -translate-y-1/2 flex items-center justify-center group"
+                        style={{
+                          left: `${(c / gridDims.cols) * 100}%`,
+                          top: `${(r / gridDims.rows) * 100}%`,
+                        }}
+                        title={`Grid Coordinate: [${c}, ${r}]`}
+                      >
+                        <div
+                          className={`w-1.5 h-1.5 transition-all duration-100 ${
+                            onPath
+                              ? 'bg-white shadow-[0_0_6px_#fabc4d] scale-150'
+                              : isSelected
+                              ? `bg-[#fabc4d] shadow-[0_0_6px_#fabc4d] scale-125 ${
+                                  previewDots ? 'opacity-70' : ''
+                                }`
+                              : 'bg-[#2D3139] group-hover:bg-[#8E95A5]'
+                          }`}
+                        />
+                      </div>
+                    );
+                  })
+                )}
+
+                {/* Live outline while drawing */}
+                {drawPath && drawPath.length > 1 && (
+                  <svg
+                    viewBox={`0 0 ${gridDims.cols} ${gridDims.rows}`}
+                    preserveAspectRatio="none"
+                    className="absolute inset-0 w-full h-full overflow-visible pointer-events-none"
+                  >
+                    <polyline
+                      points={drawPath.map(([c, r]) => `${c},${r}`).join(' ')}
+                      fill="none"
+                      stroke="#ffffff"
+                      strokeOpacity={0.85}
+                      strokeWidth={1.5}
+                      strokeLinejoin="round"
+                      strokeLinecap="round"
+                      vectorEffect="non-scaling-stroke"
+                    />
+                    {!drawClosed && drawPath.length >= 3 && (
+                      <line
+                        x1={drawPath[drawPath.length - 1][0]}
+                        y1={drawPath[drawPath.length - 1][1]}
+                        x2={drawPath[0][0]}
+                        y2={drawPath[0][1]}
+                        stroke="#ffffff"
+                        strokeOpacity={0.4}
+                        strokeWidth={1.5}
+                        strokeDasharray="4 4"
+                        vectorEffect="non-scaling-stroke"
+                      />
+                    )}
+                  </svg>
+                )}
+
+                {/* Zone label anchored at the shape's top-left */}
+                {!drawPath && activeSituation.selectedDots.length > 0 && (
+                  <div
+                    className="absolute pointer-events-none flex items-center gap-1.5 text-[10px] font-bold text-[#fabc4d] bg-[#0F1115]/90 px-1.5 py-0.5 border border-[#fabc4d]/50 whitespace-nowrap z-20"
+                    style={{
+                      left: `${(activeSituation.minCol / gridDims.cols) * 100}%`,
+                      top: `${(activeSituation.minRow / gridDims.rows) * 100}%`,
+                      transform: 'translate(-4px, calc(-100% - 6px))',
+                    }}
+                  >
                     <span className="w-1.5 h-1.5 bg-[#fabc4d] rounded-full" />
                     <span>{activeSituation.name}</span>
                   </div>
-                </div>
+                )}
               </div>
-            )}
+            </div>
+
             <div
-              className="absolute flex flex-col items-center pointer-events-none transition-all duration-300"
+              className="absolute z-20 flex flex-col items-center pointer-events-none transition-all duration-300"
               style={{ left: '42%', top: '46%' }}
             >
               <div className="w-4 h-4 rounded-full border-2 border-[#fabc4d] bg-white flex items-center justify-center shadow-[0_0_8px_#fabc4d]">
@@ -1204,7 +1299,7 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
             </div>
 
             <div
-              className="absolute flex items-center gap-1 pointer-events-none transition-all duration-300"
+              className="absolute z-20 flex items-center gap-1 pointer-events-none transition-all duration-300"
               style={{ left: '38%', top: '68%' }}
             >
               <div className="w-4 h-4 bg-[#fabc4d] text-[#111317] font-bold text-[9px] flex items-center justify-center rounded-full shadow-xs">
@@ -1269,10 +1364,11 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
             <div className="p-3 bg-[#1e2024] border border-[#2D3139] flex items-start gap-2 text-[11px] text-[#8E95A5] leading-relaxed">
               <Info className="w-4 h-4 text-[#fabc4d] shrink-0 mt-0.5" />
               <span>
-                <strong className="text-white">How to use:</strong> Click grid dots to define or
-                expand <span className="text-[#fabc4d] font-bold">{activeSituation.name}</span>.
-                Drag blocks from the palette into a robot stack, drag them around to reorder, and
-                drop them back on the palette to delete.
+                <strong className="text-white">How to use:</strong> Click dots to toggle them, or
+                drag to trace the outline of{' '}
+                <span className="text-[#fabc4d] font-bold">{activeSituation.name}</span> (hold
+                Shift to add, Alt to erase). Drag blocks from the palette into a robot stack, drag
+                them around to reorder, and drop them back on the palette to delete.
               </span>
             </div>
           </div>
