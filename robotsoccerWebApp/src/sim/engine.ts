@@ -155,6 +155,12 @@ export interface ExecState {
   turnTarget: number | null;
   status: string;
   target: [number, number] | null;
+  /**
+   * Last Defender / GoalKeeper block this robot ran. If the ball then leaves that zone and the
+   * robot has no stack for the new zone, it keeps doing that job (back to its post, in range)
+   * instead of freezing wherever it happened to be.
+   */
+  role: ScriptBlock | null;
 }
 
 export interface SimWorld {
@@ -214,6 +220,7 @@ const freshExec = (): ExecState => ({
   turnTarget: null,
   status: 'idle',
   target: null,
+  role: null,
 });
 
 export const createWorld = (): SimWorld => {
@@ -978,7 +985,15 @@ export const step = (w: SimWorld, strategy: StrategyConfig, dt: number) => {
     const st = w.exec[bot.id];
     const routine: RobotRoutine | null = routineFor(strategy, zoneId, bot.id);
     if ((routine?.id ?? null) !== st.routineId) {
-      Object.assign(st, freshExec(), { routineId: routine?.id ?? null });
+      Object.assign(st, freshExec(), { routineId: routine?.id ?? null, role: st.role });
+    }
+    if ((!routine || routine.blocks.length === 0) && st.role) {
+      const { cmd } = runBlock(w, bot, st.role, st, true);
+      st.status = `${st.status} (no stack in this zone — keeping post)`;
+      st.t += dt;
+      st.target = [cmd.tx, cmd.ty];
+      commands.set(bot.id, cmd);
+      return;
     }
     if (!routine || routine.blocks.length === 0) {
       st.status = zoneId ? 'No stack in this zone — holding' : 'No active zone — holding';
@@ -988,6 +1003,7 @@ export const step = (w: SimWorld, strategy: StrategyConfig, dt: number) => {
     }
     if (st.blockIdx >= routine.blocks.length) st.blockIdx = 0;
     const block = routine.blocks[st.blockIdx];
+    st.role = block.type === 'defender' || block.type === 'goalkeeper' ? block : null;
     const isLast = st.blockIdx === routine.blocks.length - 1;
     const { cmd, done } = runBlock(w, bot, block, st, isLast);
     st.t += dt;
@@ -1015,7 +1031,7 @@ export const step = (w: SimWorld, strategy: StrategyConfig, dt: number) => {
     if (ballContact(w, r, cmd.kick)) {
       const st = w.exec[r.id];
       const routine = routineFor(strategy, zoneId, r.id);
-      const blk = routine?.blocks[st.blockIdx];
+      const blk = routine?.blocks.length ? routine.blocks[st.blockIdx] : st.role;
       if (blk && (blk.type === 'kickA' || blk.type === 'kickB')) {
         st.phase = 1; // finishes the kick block next tick
         log(w, `${r.label} ${blk.type === 'kickA' ? 'shot (KickA)' : 'passed (KickB)'}`);
