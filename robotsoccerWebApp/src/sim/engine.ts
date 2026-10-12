@@ -14,7 +14,7 @@
  */
 
 import { StrategyConfig, ScriptBlock, RobotRoutine } from '../types/strategy';
-import { gridDimsFor, quartersOfSituation, quarterAt } from '../utils/zones';
+import { gridDimsFor, shapeOfSituation, pointInShape, ZoneShape } from '../utils/zones';
 
 /* ------------------------------------------------------------------ */
 /* Constants                                                           */
@@ -268,34 +268,32 @@ const PRIORITY_RANK: Record<string, number> = {
   'Low Priority': 0,
 };
 
-let quarterCache: { strategy: StrategyConfig | null; map: Map<string, Set<string>> } = {
+let shapeCache: { strategy: StrategyConfig | null; map: Map<string, ZoneShape> } = {
   strategy: null,
   map: new Map(),
 };
 
-const zoneQuarters = (strategy: StrategyConfig) => {
-  if (quarterCache.strategy !== strategy) {
+const zoneShapes = (strategy: StrategyConfig) => {
+  if (shapeCache.strategy !== strategy) {
     const { cols, rows } = gridDimsFor(strategy.resolution);
-    const map = new Map<string, Set<string>>();
-    strategy.situations.forEach((s) =>
-      map.set(s.id, quartersOfSituation(s as typeof s & { selectedQuarters?: string[] }, cols, rows))
-    );
-    quarterCache = { strategy, map };
+    const map = new Map<string, ZoneShape>();
+    strategy.situations.forEach((s) => map.set(s.id, shapeOfSituation(s, cols, rows)));
+    shapeCache = { strategy, map };
   }
-  return quarterCache.map;
+  return shapeCache.map;
 };
 
 /** All zones containing a field point, best (highest priority, then list order) first. */
 export const zonesAt = (strategy: StrategyConfig, x: number, y: number) => {
-  const { cols, rows } = gridDimsFor(strategy.resolution);
-  const u = clamp(((x + FIELD.halfX) / (2 * FIELD.halfX)) * cols, 0, cols);
-  const v = clamp(((y + FIELD.halfY) / (2 * FIELD.halfY)) * rows, 0, rows);
-  const q = quarterAt(u, v, cols, rows);
-  if (!q) return [];
-  const map = zoneQuarters(strategy);
+  const u = clamp((x + FIELD.halfX) / (2 * FIELD.halfX), 0, 1);
+  const v = clamp((y + FIELD.halfY) / (2 * FIELD.halfY), 0, 1);
+  const map = zoneShapes(strategy);
   return strategy.situations
     .map((s, i) => ({ s, i }))
-    .filter(({ s }) => map.get(s.id)?.has(q))
+    .filter(({ s }) => {
+      const shape = map.get(s.id);
+      return !!shape && pointInShape(u, v, shape);
+    })
     .sort(
       (a, b) =>
         (PRIORITY_RANK[b.s.priority] ?? 0) - (PRIORITY_RANK[a.s.priority] ?? 0) || a.i - b.i

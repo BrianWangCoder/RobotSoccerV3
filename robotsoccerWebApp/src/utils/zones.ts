@@ -1,4 +1,5 @@
 /* Zone geometry shared by the Strategy Builder and the Simulator. */
+import polygonClipping, { MultiPolygon } from 'polygon-clipping';
 
 export type Pt = [number, number]; // [col, row] — lattice point, (0,0) = top-left field corner
 export type ZoneMode = 'replace' | 'add' | 'erase';
@@ -66,37 +67,10 @@ export const enclosedDots = (path: Pt[], ptCols: number, ptRows: number, closed:
 };
 
 /**
- * Zone SHAPES are stored as filled "quarters": every grid cell is split by both diagonals into
- * 4 triangles (0 = top, 1 = right, 2 = bottom, 3 = left). This keeps exactly what you drew:
- * straight/adjacent edges stay straight, and a diagonal only appears where you drew one.
- * Keys are "col,row,q". cols/rows = number of cells.
+ * Legacy shape format: "quarters" — every grid cell split by both diagonals into 4 triangles
+ * (0 = top, 1 = right, 2 = bottom, 3 = left), keyed "col,row,q". Only read for old saves.
  */
 export const qKey = (c: number, r: number, q: number) => `${c},${r},${q}`;
-
-/** Centroid of quarter q of cell (c,r), in lattice units. */
-export const quarterCentroid = (c: number, r: number, q: number): [number, number] =>
-  q === 0
-    ? [c + 0.5, r + 1 / 6]
-    : q === 1
-    ? [c + 5 / 6, r + 0.5]
-    : q === 2
-    ? [c + 0.5, r + 5 / 6]
-    : [c + 1 / 6, r + 0.5];
-
-/** Every quarter whose centre lies inside the closed outline. */
-export const polygonQuarters = (path: Pt[], cols: number, rows: number): Set<string> => {
-  const out = new Set<string>();
-  if (path.length < 3) return out;
-  for (let r = 0; r < rows; r++) {
-    for (let c = 0; c < cols; c++) {
-      for (let q = 0; q < 4; q++) {
-        const [x, y] = quarterCentroid(c, r, q);
-        if (pointInPolygon(x, y, path)) out.add(qKey(c, r, q));
-      }
-    }
-  }
-  return out;
-};
 
 /** Legacy zones (saved before shapes were stored) — rebuild a shape from their dots. */
 export const quartersFromDots = (dots: Set<string>, cols: number, rows: number): Set<string> => {
@@ -115,105 +89,25 @@ export const quartersFromDots = (dots: Set<string>, cols: number, rows: number):
   return out;
 };
 
-/**
- * Outline of a set of quarters as an SVG path (lattice units). Shared internal edges cancel,
- * the remaining boundary edges are chained into closed loops and collinear points dropped.
- */
-export const quartersPath = (quarters: Set<string>): string => {
-  // Work in doubled coordinates so cell centres are integers
-  const edges = new Map<string, [Pt, Pt]>();
-  const k2 = ([x, y]: Pt) => `${x},${y}`;
-  quarters.forEach((key) => {
-    const [c, r, q] = key.split(',').map(Number);
-    const tl: Pt = [2 * c, 2 * r];
-    const tr: Pt = [2 * c + 2, 2 * r];
-    const br: Pt = [2 * c + 2, 2 * r + 2];
-    const bl: Pt = [2 * c, 2 * r + 2];
-    const ctr: Pt = [2 * c + 1, 2 * r + 1];
-    const tri: Pt[] =
-      q === 0 ? [tl, tr, ctr] : q === 1 ? [tr, br, ctr] : q === 2 ? [br, bl, ctr] : [bl, tl, ctr];
-    for (let i = 0; i < 3; i++) {
-      const a = tri[i];
-      const b = tri[(i + 1) % 3];
-      const rev = `${k2(b)}>${k2(a)}`;
-      if (edges.has(rev)) edges.delete(rev);
-      else edges.set(`${k2(a)}>${k2(b)}`, [a, b]);
-    }
-  });
-
-  const out = new Map<string, Pt[]>();
-  edges.forEach(([a, b]) => {
-    const k = k2(a);
-    if (!out.has(k)) out.set(k, []);
-    out.get(k)!.push(b);
-  });
-  const take = (k: string): Pt | undefined => {
-    const list = out.get(k);
-    if (!list) return undefined;
-    const p = list.pop();
-    if (!list.length) out.delete(k);
-    return p;
-  };
-
-  let d = '';
-  while (out.size) {
-    const startKey = out.keys().next().value as string;
-    const loop: Pt[] = [startKey.split(',').map(Number) as Pt];
-    let cur = startKey;
-    for (let guard = 0; guard < 200000; guard++) {
-      const nxt = take(cur);
-      if (!nxt) break;
-      cur = k2(nxt);
-      if (cur === startKey) break;
-      loop.push(nxt);
-    }
-    // Drop collinear points so straight edges are single segments
-    const pts = loop.filter((p, i) => {
-      const a = loop[(i - 1 + loop.length) % loop.length];
-      const b = loop[(i + 1) % loop.length];
-      return (p[0] - a[0]) * (b[1] - p[1]) !== (p[1] - a[1]) * (b[0] - p[0]);
-    });
-    if (pts.length < 3) continue;
-    d += pts.map(([x, y], i) => `${i ? 'L' : 'M'}${x / 2} ${y / 2}`).join('') + 'Z';
-  }
-  return d;
-};
-
-/** Grid-following line between two dots: only horizontal/vertical steps (no diagonal cuts). */
-export const rasterLine4 = (a: Pt, b: Pt): Pt[] => {
-  const pts: Pt[] = [a];
-  let [x, y] = a;
-  const dx = Math.abs(b[0] - x);
-  const dy = Math.abs(b[1] - y);
-  const sx = b[0] > x ? 1 : -1;
-  const sy = b[1] > y ? 1 : -1;
-  let ix = 0;
-  let iy = 0;
-  while (ix < dx || iy < dy) {
-    if ((0.5 + ix) / dx < (0.5 + iy) / dy) {
-      x += sx;
-      ix++;
-    } else {
-      y += sy;
-      iy++;
-    }
-    pts.push([x, y]);
-  }
-  return pts;
-};
-
 
 /* ------------------------------------------------------------------ */
 /* Shared helpers used by both the Strategy Builder and the Simulator  */
 /* ------------------------------------------------------------------ */
 
 /** Number of grid CELLS for a resolution label (dots = cells + 1 in each direction). */
-export const gridDimsFor = (resolution: string): { cols: number; rows: number } =>
-  resolution === 'Coarse (8x6)'
-    ? { cols: 8, rows: 6 }
-    : resolution === 'Fine (16x12)'
-    ? { cols: 16, rows: 12 }
-    : { cols: 12, rows: 9 };
+export const RESOLUTIONS = [
+  { label: 'Very Coarse (4x3)', cols: 4, rows: 3 },
+  { label: 'Coarse (8x6)', cols: 8, rows: 6 },
+  { label: 'Medium (12x9)', cols: 12, rows: 9 },
+  { label: 'Fine (16x12)', cols: 16, rows: 12 },
+  { label: 'Extra Fine (20x15)', cols: 20, rows: 15 },
+  { label: 'Ultra Fine (24x18)', cols: 24, rows: 18 },
+] as const;
+
+export const gridDimsFor = (resolution: string): { cols: number; rows: number } => {
+  const r = RESOLUTIONS.find((r) => r.label === resolution);
+  return r ? { cols: r.cols, rows: r.rows } : { cols: 12, rows: 9 };
+};
 
 /** A situation's drawn shape as quarter-cells (falls back to rebuilding legacy dot-only zones). */
 export const quartersOfSituation = (
@@ -225,19 +119,174 @@ export const quartersOfSituation = (
     ? new Set(sit.selectedQuarters)
     : quartersFromDots(new Set(sit.selectedDots), cols, rows);
 
+export const zoneColor = (index: number) => ZONE_COLORS[(index < 0 ? 0 : index) % ZONE_COLORS.length];
+
+/* ------------------------------------------------------------------ */
+/* Polygon zone shapes                                                 */
+/* ------------------------------------------------------------------ */
+
 /**
- * Which quarter-cell a point lies in. u, v are fractional lattice coordinates
- * (0..cols, 0..rows across the field). Returns null when off the field.
+ * Zone shapes are stored as exact polygons in NORMALISED field units (0..1 across, 0..1 down),
+ * so edges at any angle stay perfectly straight and the shape survives resolution changes.
+ * Format is polygon-clipping's MultiPolygon: polygons → rings (outer first, then holes) → [x, y].
  */
-export const quarterAt = (u: number, v: number, cols: number, rows: number): string | null => {
-  if (u < 0 || v < 0 || u > cols || v > rows) return null;
-  const c = Math.min(cols - 1, Math.floor(u));
-  const r = Math.min(rows - 1, Math.floor(v));
-  const fx = u - c;
-  const fy = v - r;
-  const q =
-    fy <= fx && fy <= 1 - fx ? 0 : fx >= fy && fx >= 1 - fy ? 1 : fy >= fx && fy >= 1 - fx ? 2 : 3;
-  return qKey(c, r, q);
+export type ZoneShape = MultiPolygon;
+
+/** Closed outline (lattice dots) → normalised shape; self-crossings are resolved by the union. */
+export const shapeFromPath = (path: Pt[], cols: number, rows: number): ZoneShape =>
+  path.length < 3
+    ? []
+    : polygonClipping.union([[path.map(([c, r]) => [c / cols, r / rows] as [number, number])]]);
+
+export const mergeShapes = (drawn: ZoneShape, mode: ZoneMode, current: ZoneShape): ZoneShape => {
+  if (mode === 'replace') return drawn;
+  if (mode === 'add') return polygonClipping.union(current, drawn);
+  return current.length ? polygonClipping.difference(current, drawn) : [];
 };
 
-export const zoneColor = (index: number) => ZONE_COLORS[(index < 0 ? 0 : index) % ZONE_COLORS.length];
+/** Legacy zones stored as quarter-cells — rebuild a polygon from their triangles. */
+export const shapeFromQuarters = (quarters: Set<string>, cols: number, rows: number): ZoneShape => {
+  if (!quarters.size) return [];
+  const tris: ZoneShape = [...quarters].map((key) => {
+    const [c, r, q] = key.split(',').map(Number);
+    const tl: Pt = [c, r];
+    const tr: Pt = [c + 1, r];
+    const br: Pt = [c + 1, r + 1];
+    const bl: Pt = [c, r + 1];
+    const ctr: Pt = [c + 0.5, r + 0.5];
+    const tri = q === 0 ? [tl, tr, ctr] : q === 1 ? [tr, br, ctr] : q === 2 ? [br, bl, ctr] : [bl, tl, ctr];
+    return [tri.map(([x, y]) => [x / cols, y / rows] as [number, number])];
+  });
+  return polygonClipping.union(tris[0], ...tris.slice(1));
+};
+
+type ShapeCarrier = {
+  selectedDots: string[];
+  selectedQuarters?: string[];
+  selectedShape?: ZoneShape;
+};
+const shapeCache = new WeakMap<object, { cols: number; rows: number; shape: ZoneShape }>();
+
+/** A situation's shape (rebuilt from quarters / dots for zones saved in older formats). */
+export const shapeOfSituation = (sit: ShapeCarrier, cols: number, rows: number): ZoneShape => {
+  if (sit.selectedShape) return sit.selectedShape;
+  const hit = shapeCache.get(sit);
+  if (hit && hit.cols === cols && hit.rows === rows) return hit.shape;
+  const shape = shapeFromQuarters(quartersOfSituation(sit, cols, rows), cols, rows);
+  shapeCache.set(sit, { cols, rows, shape });
+  return shape;
+};
+
+/** SVG path for a shape inside a `0 0 cols rows` viewBox (use fillRule="evenodd"). */
+export const shapePath = (shape: ZoneShape, cols: number, rows: number): string =>
+  shape
+    .flatMap((poly) =>
+      poly.map(
+        (ring) =>
+          ring
+            .slice(0, -1) // polygon-clipping repeats the first point at the end
+            .map(([x, y], i) => `${i ? 'L' : 'M'}${x * cols} ${y * rows}`)
+            .join('') + 'Z'
+      )
+    )
+    .join('');
+
+/** Is a normalised point inside (even-odd across all rings, so holes are excluded)? */
+export const pointInShape = (x: number, y: number, shape: ZoneShape): boolean => {
+  let inside = false;
+  shape.forEach((poly) =>
+    poly.forEach((ring) => {
+      if (pointInPolygon(x, y, ring as Pt[])) inside = !inside;
+    })
+  );
+  return inside;
+};
+
+const onSegment = (x: number, y: number, [ax, ay]: number[], [bx, by]: number[]) => {
+  const cross = (bx - ax) * (y - ay) - (by - ay) * (x - ax);
+  const len = Math.hypot(bx - ax, by - ay) || 1;
+  if (Math.abs(cross) / len > 1e-9) return false;
+  return (
+    x >= Math.min(ax, bx) - 1e-9 &&
+    x <= Math.max(ax, bx) + 1e-9 &&
+    y >= Math.min(ay, by) - 1e-9 &&
+    y <= Math.max(ay, by) + 1e-9
+  );
+};
+
+/** Lattice dots inside or exactly on the edge of a shape. */
+export const dotsInShape = (shape: ZoneShape, cols: number, rows: number): Set<string> => {
+  const out = new Set<string>();
+  if (!shape.length) return out;
+  const rings = shape.flat();
+  for (let r = 0; r <= rows; r++) {
+    for (let c = 0; c <= cols; c++) {
+      const x = c / cols;
+      const y = r / rows;
+      const onEdge = rings.some((ring) =>
+        ring.some((p, i) => i > 0 && onSegment(x, y, ring[i - 1], p))
+      );
+      if (onEdge || pointInShape(x, y, shape)) out.add(keyOf([c, r]));
+    }
+  }
+  return out;
+};
+
+/** Area-weighted centre of a shape (normalised units), or null when empty. */
+export const shapeCentroid = (shape: ZoneShape): [number, number] | null => {
+  let a = 0;
+  let cx = 0;
+  let cy = 0;
+  shape.flat().forEach((ring) => {
+    for (let i = 1; i < ring.length; i++) {
+      const [x0, y0] = ring[i - 1];
+      const [x1, y1] = ring[i];
+      const f = x0 * y1 - x1 * y0;
+      a += f;
+      cx += (x0 + x1) * f;
+      cy += (y0 + y1) * f;
+    }
+  });
+  if (Math.abs(a) < 1e-12) return null;
+  return [cx / (3 * a), cy / (3 * a)];
+};
+
+/**
+ * Straightens a freehand outline (Ramer–Douglas–Peucker). Points whose index is in `keep`
+ * (clicked corners) are never removed; wobbly dragged runs between them become straight edges.
+ */
+export const simplifyPath = (path: Pt[], keep: Set<number>, eps = 0.75): Pt[] => {
+  if (path.length < 3) return path;
+  const dist = (p: Pt, a: Pt, b: Pt) => {
+    const dx = b[0] - a[0];
+    const dy = b[1] - a[1];
+    const len = Math.hypot(dx, dy);
+    if (!len) return Math.hypot(p[0] - a[0], p[1] - a[1]);
+    return Math.abs(dx * (a[1] - p[1]) - dy * (a[0] - p[0])) / len;
+  };
+  const rdp = (pts: Pt[]): Pt[] => {
+    if (pts.length < 3) return pts;
+    let best = -1;
+    let at = 0;
+    for (let i = 1; i < pts.length - 1; i++) {
+      const d = dist(pts[i], pts[0], pts[pts.length - 1]);
+      if (d > best) {
+        best = d;
+        at = i;
+      }
+    }
+    if (best <= eps) return [pts[0], pts[pts.length - 1]];
+    return [...rdp(pts.slice(0, at + 1)).slice(0, -1), ...rdp(pts.slice(at))];
+  };
+  // The outline is closed, so the run after the last kept point wraps back to the start
+  const anchors = [...new Set([0, ...[...keep].filter((i) => i > 0 && i < path.length)])].sort(
+    (a, b) => a - b
+  );
+  const ring = [...path, path[0]];
+  const out: Pt[] = [];
+  anchors.forEach((s, k) => {
+    const e = k + 1 < anchors.length ? anchors[k + 1] : path.length;
+    out.push(...rdp(ring.slice(s, e + 1)).slice(0, -1));
+  });
+  return out;
+};

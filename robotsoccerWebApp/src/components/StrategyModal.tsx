@@ -1,10 +1,6 @@
 import React, { useState } from 'react';
 import { X, Upload, Download, Check, FileCode, Plus } from 'lucide-react';
 import { StrategyConfig } from '../types/strategy';
-import {
-  defaultDefensiveStrategy,
-  defaultOffensiveStrategy,
-} from '../data/defaultStrategies';
 
 interface StrategyModalProps {
   isOpen: boolean;
@@ -142,43 +138,10 @@ export const StrategyModal: React.FC<StrategyModalProps> = ({
           </form>
         ) : (
           <div className="p-4 space-y-4">
-            {/* Presets List */}
+            {/* File Upload */}
             <div>
               <span className="block text-[11px] font-bold uppercase text-[#8E95A5] mb-2">
-                SELECT A BUILT-IN STRATEGY PRESET:
-              </span>
-              <div className="space-y-2">
-                {[defaultDefensiveStrategy, defaultOffensiveStrategy].map(
-                  (strat) => (
-                    <div
-                      key={strat.id}
-                      onClick={() => {
-                        onSelectStrategy(strat);
-                        onClose();
-                      }}
-                      className="p-3 bg-[#0F1115] hover:bg-[#22252A] border border-[#2D3139] hover:border-[#fabc4d] cursor-pointer flex items-center justify-between transition-colors"
-                    >
-                      <div>
-                        <div className="text-xs font-bold text-white font-mono">
-                          {strat.filename}
-                        </div>
-                        <div className="text-[11px] text-[#8E95A5]">
-                          {strat.name} ({strat.routines.length} robots configured)
-                        </div>
-                      </div>
-                      <span className="text-xs text-[#fabc4d] font-bold uppercase">
-                        LOAD
-                      </span>
-                    </div>
-                  )
-                )}
-              </div>
-            </div>
-
-            {/* File Upload */}
-            <div className="pt-2 border-t border-[#2D3139]">
-              <span className="block text-[11px] font-bold uppercase text-[#8E95A5] mb-2">
-                OR UPLOAD FROM COMPUTER:
+                UPLOAD FROM COMPUTER:
               </span>
               <label className="flex items-center justify-center gap-2 p-3 bg-[#0F1115] border border-dashed border-[#2D3139] hover:border-[#fabc4d] text-[#8E95A5] hover:text-white text-xs font-bold uppercase cursor-pointer transition-colors">
                 <Upload className="w-4 h-4 text-[#fabc4d]" />

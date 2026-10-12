@@ -42,13 +42,23 @@ export interface SituationZone {
   minRow: number;
   maxRow: number;
   selectedDots: string[]; // Set of "col,row" strings
+  /** Exact zone polygon(s) in normalised field units — see ZoneShape in utils/zones. */
+  selectedShape?: [number, number][][][];
+  /** Legacy shape format (quarter-cells); only read when selectedShape is missing. */
+  selectedQuarters?: string[];
 }
 
 export interface StrategyConfig {
   id: string;
   filename: string;
   name: string;
-  resolution: 'Coarse (8x6)' | 'Medium (12x9)' | 'Fine (16x12)';
+  resolution:
+    | 'Very Coarse (4x3)'
+    | 'Coarse (8x6)'
+    | 'Medium (12x9)'
+    | 'Fine (16x12)'
+    | 'Extra Fine (20x15)'
+    | 'Ultra Fine (24x18)';
   activeSituationId: string;
   situations: SituationZone[];
   routines: RobotRoutine[];

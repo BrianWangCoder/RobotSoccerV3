@@ -39,13 +39,17 @@ import {
   ZONE_COLORS,
   keyOf,
   samePt,
-  rasterLine4,
   enclosedDots,
-  polygonQuarters,
-  quartersFromDots,
-  quartersPath,
   gridDimsFor,
-  quarterCentroid,
+  RESOLUTIONS,
+  ZoneShape,
+  shapeFromPath,
+  mergeShapes,
+  shapeOfSituation,
+  shapePath,
+  dotsInShape,
+  shapeCentroid,
+  simplifyPath,
 } from '../utils/zones';
 
 /* ------------------------------------------------------------------ */
@@ -495,13 +499,9 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
     strategy.situations.find((s) => s.id === situationId)?.name ?? activeSituation.name;
 
   type Situation = StrategyConfig['situations'][number];
-  /** Situations may carry the drawn shape as quarter-cells (see quartersPath). */
-  type ZoneSituation = Situation & { selectedQuarters?: string[] };
 
-  const quartersOf = (sit: Situation): Set<string> => {
-    const q = (sit as ZoneSituation).selectedQuarters;
-    return q ? new Set(q) : quartersFromDots(new Set(sit.selectedDots), gridDims.cols, gridDims.rows);
-  };
+  const shapeOf = (sit: Situation): ZoneShape =>
+    shapeOfSituation(sit, gridDims.cols, gridDims.rows);
 
   const colorFor = (situationId: string) => {
     const i = strategy.situations.findIndex((s) => s.id === situationId);
@@ -527,7 +527,8 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
       name: `Situation ${n}`,
       priority: 'Medium Priority',
       selectedDots: [],
-      selectedQuarters: [],
+      selectedShape: [],
+      selectedQuarters: undefined,
       minCol: 0,
       maxCol: 0,
       minRow: 0,
@@ -593,7 +594,10 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
     }));
     setEditingRangeFor(null);
   };
-  const [sliderVal, setSliderVal] = useState<number>(1); // 0 = Coarse, 1 = Med, 2 = Fine
+  const sliderVal = Math.max(
+    0,
+    RESOLUTIONS.findIndex((r) => r.label === strategy.resolution)
+  );
 
   /* ---------------- drag state ---------------- */
   const [drag, setDrag] = useState<DragState | null>(null);
@@ -979,7 +983,7 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
   const [drawPath, setDrawPath] = useState<Pt[] | null>(null);
   const [drawClosed, setDrawClosed] = useState(false);
 
-  const commitDots = (dots: string[], quarters?: Set<string>) => {
+  const commitDots = (dots: string[], shape?: ZoneShape) => {
     const cols = dots.map((d) => parseInt(d.split(',')[0], 10));
     const rows = dots.map((d) => parseInt(d.split(',')[1], 10));
     onUpdateStrategy({
@@ -989,7 +993,7 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
           ? {
               ...sit,
               selectedDots: dots,
-              ...(quarters ? { selectedQuarters: [...quarters] } : {}),
+              ...(shape ? { selectedShape: shape, selectedQuarters: undefined } : {}),
               minCol: cols.length ? Math.min(...cols) : 0,
               maxCol: cols.length ? Math.max(...cols) : 0,
               minRow: rows.length ? Math.min(...rows) : 0,
@@ -1038,6 +1042,7 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
    * Ctrl/Cmd-click toggles a single dot; Backspace undoes the last point; Esc cancels.
    */
   const cornerModeRef = useRef(false); // outline contains clicked corners → stays open after release
+  const keepRef = useRef<Set<number>>(new Set()); // path indices that were clicked (kept exact)
   const downRef = useRef<{ moved: boolean } | null>(null);
   const [pending, setPending] = useState(false);
   const [hoverDot, setHoverDot] = useState<Pt | null>(null);
@@ -1050,6 +1055,7 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
   const cancelOutline = () => {
     pathRef.current = null;
     cornerModeRef.current = false;
+    keepRef.current = new Set();
     downRef.current = null;
     closedRef.current = false;
     setDrawPath(null);
@@ -1057,15 +1063,40 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
     setDrawClosed(false);
   };
 
-  /** Fills the outline into the active zone (≥3 points closes it; fewer just adds the dots). */
+  /**
+   * Shape + dots the active zone would have after merging an outline. ≥3 points make a
+   * polygon (dragged runs are straightened); fewer just add the dots they touch.
+   */
+  const outlineResult = (path: Pt[], mode: ZoneMode) => {
+    if (path.length < 3) {
+      return {
+        shape: undefined,
+        dots: mergeZone(enclosedDots(path, ptCols, ptRows, false), mode),
+      };
+    }
+    const straight = simplifyPath(path, keepRef.current);
+    const shape = mergeShapes(
+      shapeFromPath(straight, gridDims.cols, gridDims.rows),
+      mode,
+      shapeOf(activeSituation)
+    );
+    const inShape = dotsInShape(shape, gridDims.cols, gridDims.rows);
+    const current = new Set(activeSituation.selectedDots);
+    const dots =
+      mode === 'replace'
+        ? inShape
+        : mode === 'add'
+        ? new Set([...current, ...inShape])
+        : new Set([...current].filter((k) => inShape.has(k)));
+    return { shape, dots };
+  };
+
+  /** Fills the outline into the active zone. */
   const finishOutline = (path: Pt[] | null = pathRef.current) => {
     if (!path || !path.length) return cancelOutline();
-    const drawn = enclosedDots(path, ptCols, ptRows, path.length >= 3);
-    const drawnQ = polygonQuarters(path, gridDims.cols, gridDims.rows);
-    const mode = zoneModeRef.current;
-    const quarters = mergeZone(drawnQ, mode, quartersOf(activeSituation));
+    const { shape, dots } = outlineResult(path, zoneModeRef.current);
     cancelOutline();
-    commitDots([...mergeZone(drawn, mode)], quarters);
+    commitDots([...dots], shape);
   };
 
   // Keyboard + zone/resolution changes go through refs so listeners never see stale state
@@ -1087,7 +1118,10 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
       } else if (e.key === 'Backspace' || e.key === 'Delete') {
         e.preventDefault();
         if (path.length <= 1) cancelRef.current();
-        else setPath(path.slice(0, -1));
+        else {
+          keepRef.current.delete(path.length - 1);
+          setPath(path.slice(0, -1));
+        }
       }
     };
     window.addEventListener('keydown', onKey);
@@ -1105,18 +1139,14 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
     if (!path) return false;
     const last = path[path.length - 1];
     if (samePt(d, last)) return false;
-    const next = [...path];
-    for (const p of rasterLine4(last, d).slice(1)) {
-      if (samePt(p, next[0])) {
-        if (next.length >= 3) {
-          finishOutline(next);
-          return true;
-        }
-        continue; // too short to be a shape, ignore touching start
+    if (samePt(d, path[0])) {
+      if (path.length >= 3) {
+        finishOutline(path);
+        return true;
       }
-      next.push(p);
+      return false; // too short to be a shape, ignore touching start
     }
-    setPath(next);
+    setPath([...path, d]);
     return false;
   };
 
@@ -1137,6 +1167,7 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
     const path = pathRef.current;
     if (!path) {
       zoneModeRef.current = e.altKey ? 'erase' : e.shiftKey ? 'add' : 'replace';
+      keepRef.current = new Set([0]);
       setPath([d]);
       return;
     }
@@ -1148,7 +1179,10 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
       return;
     }
     // Otherwise this press adds a corner (straight edge from the previous point)
-    if (!samePt(d, path[path.length - 1])) setPath([...path, d]);
+    if (!samePt(d, path[path.length - 1])) {
+      keepRef.current.add(path.length);
+      setPath([...path, d]);
+    }
   };
 
   const handleGridPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
@@ -1195,19 +1229,9 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
     !samePt(hoverDot, drawPath[drawPath.length - 1])
       ? [...drawPath, hoverDot]
       : drawPath;
-  const previewDots = previewPath
-    ? mergeZone(
-        enclosedDots(previewPath, ptCols, ptRows, previewPath.length >= 3),
-        zoneModeRef.current
-      )
-    : null;
-  const previewQuarters = previewPath
-    ? mergeZone(
-        polygonQuarters(previewPath, gridDims.cols, gridDims.rows),
-        zoneModeRef.current,
-        quartersOf(activeSituation)
-      )
-    : null;
+  const previewResult = previewPath ? outlineResult(previewPath, zoneModeRef.current) : null;
+  const previewDots = previewResult?.dots ?? null;
+  const previewShape = previewResult?.shape;
   const pathKeys = new Set(drawPath?.map(keyOf) ?? []);
   const canCloseOnStart =
     pending && !!drawPath && drawPath.length >= 3 && !!hoverDot && samePt(hoverDot, drawPath[0]);
@@ -1220,7 +1244,11 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
       sit,
       isActive,
       color: colorFor(sit.id),
-      path: quartersPath(isActive && previewQuarters ? previewQuarters : quartersOf(sit)),
+      path: shapePath(
+        isActive && previewShape ? previewShape : shapeOf(sit),
+        gridDims.cols,
+        gridDims.rows
+      ),
     };
   });
   // Inactive zones draw first so the active zone sits on top
@@ -1344,9 +1372,28 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
   };
 
   const handleResolutionSlider = (val: number) => {
-    setSliderVal(val);
-    const res = val === 0 ? 'Coarse (8x6)' : val === 2 ? 'Fine (16x12)' : 'Medium (12x9)';
-    onUpdateStrategy({ ...strategy, resolution: res });
+    // Shapes are resolution-independent; re-pick the dots that fall inside them on the new grid
+    const { label, cols, rows } = RESOLUTIONS[val];
+    onUpdateStrategy({
+      ...strategy,
+      resolution: label,
+      situations: strategy.situations.map((sit) => {
+        const shape = shapeOfSituation(sit, gridDims.cols, gridDims.rows);
+        const dots = [...dotsInShape(shape, cols, rows)];
+        const cs = dots.map((d) => parseInt(d.split(',')[0], 10));
+        const rs = dots.map((d) => parseInt(d.split(',')[1], 10));
+        return {
+          ...sit,
+          selectedShape: shape,
+          selectedQuarters: undefined,
+          selectedDots: dots,
+          minCol: cs.length ? Math.min(...cs) : 0,
+          maxCol: cs.length ? Math.max(...cs) : 0,
+          minRow: rs.length ? Math.min(...rs) : 0,
+          maxRow: rs.length ? Math.max(...rs) : 0,
+        };
+      }),
+    });
   };
 
   const activeRoutines = strategy.routines.filter((r) => r.situationId === activeSituation.id);
@@ -1594,19 +1641,9 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
   /** Middle of a zone in simulator millimetres (where the preview ball starts). */
   const zoneCenterMm = (situationId: string): [number, number] => {
     const sit = strategy.situations.find((s) => s.id === situationId);
-    const qs = sit ? [...quartersOf(sit)] : [];
-    if (!qs.length) return [-1500, 300];
-    let su = 0;
-    let sv = 0;
-    qs.forEach((k) => {
-      const [c, r, q] = k.split(',').map(Number);
-      const [u, v] = quarterCentroid(c, r, q);
-      su += u;
-      sv += v;
-    });
-    const u = su / qs.length;
-    const v = sv / qs.length;
-    return [-4200 + (u / gridDims.cols) * 8400, -2800 + (v / gridDims.rows) * 5600];
+    const c = sit ? shapeCentroid(shapeOf(sit)) : null;
+    if (!c) return [-1500, 300];
+    return [-4200 + c[0] * 8400, -2800 + c[1] * 5600];
   };
 
   const previewRoutine = preview
@@ -1752,7 +1789,7 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
                           d={z.path}
                           fill={z.color}
                           fillOpacity={z.isActive ? 0.12 : 0.06}
-                          fillRule="nonzero"
+                          fillRule="evenodd"
                           stroke={z.color}
                           strokeOpacity={z.isActive ? (previewDots ? 0.6 : 1) : 0.45}
                           strokeWidth={z.isActive ? 2 : 1.5}
@@ -2194,7 +2231,7 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
                 <input
                   type="range"
                   min="0"
-                  max="2"
+                  max={RESOLUTIONS.length - 1}
                   step="1"
                   value={sliderVal}
                   onChange={(e) => handleResolutionSlider(parseInt(e.target.value, 10))}

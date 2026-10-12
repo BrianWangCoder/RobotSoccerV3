@@ -7,16 +7,14 @@ import { SimulationView } from './components/SimulationView';
 import { SetupModal } from './components/SetupModal';
 import { HelpModal } from './components/HelpModal';
 import { StrategyModal } from './components/StrategyModal';
-import { defaultDefensiveStrategy } from './data/defaultStrategies';
+import { createBlankStrategy } from './data/defaultStrategies';
 import { StrategyConfig } from './types/strategy';
 import { Check } from 'lucide-react';
 
 export default function App() {
   const [currentScreen, setCurrentScreen] = useState<ActiveScreen>('home');
   const [hostIp, setHostIp] = useState<string>('192.168.1.104');
-  const [strategy, setStrategy] = useState<StrategyConfig>(
-    defaultDefensiveStrategy
-  );
+  const [strategy, setStrategy] = useState<StrategyConfig>(createBlankStrategy);
 
   // Modals state
   const [isSetupOpen, setIsSetupOpen] = useState<boolean>(false);

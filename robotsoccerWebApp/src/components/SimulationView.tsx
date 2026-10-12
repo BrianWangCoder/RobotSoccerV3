@@ -21,8 +21,8 @@ import {
 } from '../sim/engine';
 import {
   gridDimsFor,
-  quartersOfSituation,
-  quartersPath,
+  shapeOfSituation,
+  shapePath,
   zoneColor,
 } from '../utils/zones';
 
@@ -175,9 +175,7 @@ export const SimulationView: React.FC<SimulationViewProps> = ({ strategy, onEdit
     s,
     color: zoneColor(i),
     isActive: s.id === activeId,
-    d: quartersPath(
-      quartersOfSituation(s as typeof s & { selectedQuarters?: string[] }, cols, rows)
-    ),
+    d: shapePath(shapeOfSituation(s, cols, rows), cols, rows),
   }));
   const fmtTime = `${String(Math.floor(w.time / 60)).padStart(2, '0')}:${String(
     Math.floor(w.time % 60)
@@ -345,6 +343,7 @@ export const SimulationView: React.FC<SimulationViewProps> = ({ strategy, onEdit
                         <path
                           key={z.s.id}
                           d={z.d}
+                          fillRule="evenodd"
                           fill={z.color}
                           fillOpacity={z.isActive ? 0.16 : 0.05}
                           stroke={z.color}

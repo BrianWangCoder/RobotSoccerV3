@@ -25,9 +25,6 @@ const MAX_CYCLE = 14; // s safety restart
 
 /** Fake one-zone strategy covering the whole field, so the real engine runs the blocks as-is. */
 const previewStrategy = (spec: PreviewSpec): StrategyConfig => {
-  const quarters: string[] = [];
-  for (let c = 0; c < 8; c++)
-    for (let r = 0; r < 6; r++) for (let q = 0; q < 4; q++) quarters.push(`${c},${r},${q}`);
   return {
     id: '__preview',
     filename: '__preview.json',
@@ -40,7 +37,7 @@ const previewStrategy = (spec: PreviewSpec): StrategyConfig => {
         name: 'Preview',
         priority: 'Critical',
         selectedDots: [],
-        selectedQuarters: quarters,
+        selectedShape: [[[[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]]]],
         minCol: 0,
         maxCol: 8,
         minRow: 0,
