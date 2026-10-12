@@ -13,6 +13,9 @@ import {
 import { StrategyConfig } from '../types/strategy';
 import {
   FIELD,
+  ROBOT_HALF,
+  BALL_R,
+  SimRobot,
   SimWorld,
   createWorld,
   resetPositions,
@@ -25,6 +28,7 @@ import {
   shapePath,
   zoneColor,
 } from '../utils/zones';
+import { PitchLines, PITCH_VIEWBOX, TEAM_COLORS } from './PitchLines';
 
 interface SimulationViewProps {
   strategy: StrategyConfig;
@@ -46,6 +50,10 @@ const SIM_DT = 1 / 120; // fixed physics step (s)
 /** mm → % of the drawing (viewBox spans ±outerX, ±outerY). */
 const pctX = (x: number) => ((x + FIELD.outerX) / (2 * FIELD.outerX)) * 100;
 const pctY = (y: number) => ((y + FIELD.outerY) / (2 * FIELD.outerY)) * 100;
+
+/** True-to-scale sizes as % of the drawing width (robots are 8.5 cm squares, ball Ø4.3 cm). */
+const ROBOT_W = ((2 * ROBOT_HALF) / (2 * FIELD.outerX)) * 100;
+const BALL_W = ((2 * BALL_R) / (2 * FIELD.outerX)) * 100;
 
 // The zone lattice spans the field lines (±halfX, ±halfY)
 const ZONE_LEFT = pctX(-FIELD.halfX);
@@ -72,6 +80,8 @@ export const SimulationView: React.FC<SimulationViewProps> = ({ strategy, onEdit
 
   const fieldRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<{ x: number; y: number; t: number; vx: number; vy: number } | null>(null);
+  const robotDragRef = useRef<{ bot: SimRobot; dx: number; dy: number } | null>(null);
+  const [heldRobot, setHeldRobot] = useState<SimRobot | null>(null);
 
   const w = worldRef.current;
   w.opponentsEnabled = opponentsOn;
@@ -87,7 +97,8 @@ export const SimulationView: React.FC<SimulationViewProps> = ({ strategy, onEdit
       if (runningRef.current) {
         acc += elapsed * speedRef.current;
         while (acc >= SIM_DT) {
-          if (!dragRef.current) step(worldRef.current, strategyRef.current, SIM_DT);
+          if (!dragRef.current && !robotDragRef.current)
+            step(worldRef.current, strategyRef.current, SIM_DT);
           acc -= SIM_DT;
         }
       }
@@ -122,25 +133,64 @@ export const SimulationView: React.FC<SimulationViewProps> = ({ strategy, onEdit
   };
 
   /* ---------------- ball drag / throw ---------------- */
-  const toMm = (e: React.PointerEvent) => {
+  /** Pointer → field mm (unclamped). */
+  const rawMm = (e: React.PointerEvent): [number, number] => {
     const r = fieldRef.current!.getBoundingClientRect();
-    const x = ((e.clientX - r.left) / r.width) * 2 * FIELD.outerX - FIELD.outerX;
-    const y = ((e.clientY - r.top) / r.height) * 2 * FIELD.outerY - FIELD.outerY;
+    return [
+      ((e.clientX - r.left) / r.width) * 2 * FIELD.outerX - FIELD.outerX,
+      ((e.clientY - r.top) / r.height) * 2 * FIELD.outerY - FIELD.outerY,
+    ];
+  };
+  const toMm = (e: React.PointerEvent) => {
+    const [x, y] = rawMm(e);
     return [
       Math.max(-FIELD.halfX, Math.min(FIELD.halfX, x)),
       Math.max(-FIELD.halfY, Math.min(FIELD.halfY, y)),
     ] as [number, number];
   };
 
+  /** Robot under the pointer (generous hit area so small markers are easy to grab). */
+  const robotAt = (x: number, y: number): SimRobot | null => {
+    const w = worldRef.current;
+    const bots = [...w.friendly, ...(w.opponentsEnabled ? w.opponents : [])];
+    let best: SimRobot | null = null;
+    let bestD = Math.max(ROBOT_HALF * 2, 110); // generous: the markers are small
+    bots.forEach((b) => {
+      const d = Math.hypot(b.x - x, b.y - y);
+      if (d < bestD) {
+        bestD = d;
+        best = b;
+      }
+    });
+    return best;
+  };
+
   const onFieldDown = (e: React.PointerEvent<HTMLDivElement>) => {
     if (e.button !== 0 || !fieldRef.current) return;
     e.currentTarget.setPointerCapture(e.pointerId);
+    const [rx, ry] = rawMm(e);
+    const bot = robotAt(rx, ry);
+    if (bot) {
+      // Pick up a robot: it follows the pointer (keeping the grab offset) until released
+      robotDragRef.current = { bot, dx: bot.x - rx, dy: bot.y - ry };
+      setHeldRobot(bot);
+      return;
+    }
     const [x, y] = toMm(e);
     worldRef.current.ball = { x, y, vx: 0, vy: 0 };
     dragRef.current = { x, y, t: performance.now(), vx: 0, vy: 0 };
   };
 
   const onFieldMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    const held = robotDragRef.current;
+    if (held) {
+      const [rx, ry] = rawMm(e);
+      const b = held.bot;
+      b.x = Math.max(-FIELD.halfX + ROBOT_HALF, Math.min(FIELD.halfX - ROBOT_HALF, rx + held.dx));
+      b.y = Math.max(-FIELD.halfY + ROBOT_HALF, Math.min(FIELD.halfY - ROBOT_HALF, ry + held.dy));
+      b.vx = b.vy = b.wl = b.wr = 0;
+      return;
+    }
     const d = dragRef.current;
     if (!d) return;
     const [x, y] = toMm(e);
@@ -157,13 +207,27 @@ export const SimulationView: React.FC<SimulationViewProps> = ({ strategy, onEdit
   };
 
   const onFieldUp = () => {
+    if (robotDragRef.current) {
+      const b = robotDragRef.current.bot;
+      b.vx = b.vy = b.wl = b.wr = 0; // dropped robots start from a standstill
+      robotDragRef.current = null;
+      setHeldRobot(null);
+      return;
+    }
     const d = dragRef.current;
     if (!d) return;
     dragRef.current = null;
-    const sp = Math.hypot(d.vx, d.vy);
-    const k = sp > 4000 ? 4000 / sp : 1; // release velocity = throw (capped to a hard hand roll)
-    worldRef.current.ball.vx = performance.now() - d.t < 80 ? d.vx * k : 0;
-    worldRef.current.ball.vy = performance.now() - d.t < 80 ? d.vy * k : 0;
+    // Release velocity = throw. A screen swipe is far faster than a real hand roll, so scale it
+    // down and cap it at a firm roll along the carpet.
+    const THROW_SCALE = 0.4;
+    const MAX_THROW = 2500; // mm/s
+    const vx = d.vx * THROW_SCALE;
+    const vy = d.vy * THROW_SCALE;
+    const sp = Math.hypot(vx, vy);
+    const k = sp > MAX_THROW ? MAX_THROW / sp : 1;
+    const fresh = performance.now() - d.t < 80; // pointer was still moving when released
+    worldRef.current.ball.vx = fresh ? vx * k : 0;
+    worldRef.current.ball.vy = fresh ? vy * k : 0;
   };
 
   /* ---------------- derived view data ---------------- */
@@ -305,23 +369,14 @@ export const SimulationView: React.FC<SimulationViewProps> = ({ strategy, onEdit
               onPointerMove={onFieldMove}
               onPointerUp={onFieldUp}
               onPointerCancel={onFieldUp}
-              className="relative w-full max-h-full bg-[#131B18] border border-[#2D3139] overflow-hidden cursor-crosshair touch-none"
+              className="relative w-full max-h-full bg-[#1a1c1f] border border-[#2D3139] overflow-hidden cursor-crosshair touch-none @container"
               style={{ aspectRatio: `${FIELD.outerX} / ${FIELD.outerY}` }}
             >
               <svg
-                viewBox={`${-FIELD.outerX} ${-FIELD.outerY} ${2 * FIELD.outerX} ${2 * FIELD.outerY}`}
-                className="absolute inset-0 w-full h-full stroke-[#1E3F30] stroke-[25] fill-none pointer-events-none"
+                viewBox={PITCH_VIEWBOX}
+                className="absolute inset-0 w-full h-full pointer-events-none"
               >
-                <rect x={-FIELD.halfX} y={-FIELD.halfY} width={2 * FIELD.halfX} height={2 * FIELD.halfY} />
-                <line x1="0" y1={-FIELD.halfY} x2="0" y2={FIELD.halfY} />
-                <circle cx="0" cy="0" r="1000" />
-                <circle cx="0" cy="0" r="30" fill="#1E3F30" />
-                <rect x={-FIELD.halfX} y="-1200" width="1200" height="2400" />
-                <path d="M -3000 -600 A 700 700 0 0 1 -3000 600" />
-                <rect x={-FIELD.halfX - FIELD.goalDepth} y={-FIELD.goalHalfW} width={FIELD.goalDepth} height={2 * FIELD.goalHalfW} stroke="#3DD68C" strokeOpacity={0.5} />
-                <rect x={FIELD.halfX - 1200} y="-1200" width="1200" height="2400" />
-                <path d="M 3000 -600 A 700 700 0 0 0 3000 600" />
-                <rect x={FIELD.halfX} y={-FIELD.goalHalfW} width={FIELD.goalDepth} height={2 * FIELD.goalHalfW} stroke="#e54d42" strokeOpacity={0.5} />
+                <PitchLines />
               </svg>
 
               {/* Strategy zones (same shapes as the builder) */}
@@ -360,7 +415,7 @@ export const SimulationView: React.FC<SimulationViewProps> = ({ strategy, onEdit
               {/* Target vectors */}
               {showVectors && (
                 <svg
-                  viewBox={`${-FIELD.outerX} ${-FIELD.outerY} ${2 * FIELD.outerX} ${2 * FIELD.outerY}`}
+                  viewBox={PITCH_VIEWBOX}
                   className="absolute inset-0 w-full h-full pointer-events-none"
                 >
                   {w.friendly.map((r) => {
@@ -375,10 +430,10 @@ export const SimulationView: React.FC<SimulationViewProps> = ({ strategy, onEdit
                           y2={t[1]}
                           stroke="#fabc4d"
                           strokeOpacity={0.6}
-                          strokeWidth={18}
-                          strokeDasharray="60 50"
+                          strokeWidth={6}
+                          strokeDasharray="20 16"
                         />
-                        <circle cx={t[0]} cy={t[1]} r={40} fill="none" stroke="#fabc4d" strokeOpacity={0.6} strokeWidth={14} />
+                        <circle cx={t[0]} cy={t[1]} r={14} fill="none" stroke="#fabc4d" strokeOpacity={0.6} strokeWidth={5} />
                       </g>
                     );
                   })}
@@ -389,7 +444,7 @@ export const SimulationView: React.FC<SimulationViewProps> = ({ strategy, onEdit
                     y2={w.ball.y + w.ball.vy * 0.25}
                     stroke="#ffffff"
                     strokeOpacity={0.5}
-                    strokeWidth={14}
+                    strokeWidth={5}
                   />
                 </svg>
               )}
@@ -399,54 +454,70 @@ export const SimulationView: React.FC<SimulationViewProps> = ({ strategy, onEdit
                 className="absolute pointer-events-none z-30"
                 style={{ left: `${pctX(w.ball.x)}%`, top: `${pctY(w.ball.y)}%`, transform: 'translate(-50%, -50%)' }}
               >
-                <div className="w-4 h-4 rounded-full border-2 border-[#fabc4d] bg-white shadow-[0_0_10px_#fabc4d]" />
+                <div
+                  className="rounded-full bg-white border border-black/60 shadow-[0_0_6px_rgba(255,255,255,0.8)]"
+                  style={{ width: `max(${BALL_W}cqw, 9px)`, height: `max(${BALL_W}cqw, 9px)` }}
+                />
               </div>
 
-              {/* Friendly robots */}
-              {w.friendly.map((r) => {
-                const hasStack = !!routineFor(strategy, activeId, r.id)?.blocks.length;
+              {/* Robots: 8.5 cm squares drawn to scale, turned to their heading. The bar marks the front. */}
+              {[...w.friendly, ...(opponentsOn ? w.opponents : [])].map((r) => {
+                const ours = r.team === 'friendly';
+                const hasStack = ours && !!routineFor(strategy, activeId, r.id)?.blocks.length;
+                const color = ours ? TEAM_COLORS.us : TEAM_COLORS.them;
                 return (
                   <div
                     key={r.id}
-                    className="absolute z-20 flex flex-col items-center pointer-events-none"
-                    style={{ left: `${pctX(r.x)}%`, top: `${pctY(r.y)}%`, transform: 'translate(-50%, -50%)' }}
+                    className={`absolute pointer-events-none ${ours ? 'z-20' : 'z-10'}`}
+                    style={{
+                      left: `${pctX(r.x)}%`,
+                      top: `${pctY(r.y)}%`,
+                      width: `${ROBOT_W}%`,
+                      aspectRatio: '1',
+                      transform: `translate(-50%, -50%) rotate(${r.angle}deg) ${heldRobot === r ? 'scale(1.15)' : ''}`,
+                    }}
                   >
                     <div
-                      className={`relative w-7 h-7 rounded-full border-2 text-white font-bold text-[11px] flex items-center justify-center shadow-md ${
-                        hasStack ? 'border-[#fabc4d] bg-[#3b2d2d]' : 'border-[#8E95A5] bg-[#22252A] opacity-70'
+                      className={`relative w-full h-full flex items-center justify-center shadow-md ${
+                        heldRobot === r ? 'ring-2 ring-[#38bdf8]' : ''
                       }`}
+                      style={
+                        ours && !hasStack
+                          ? { background: '#22252A', border: `2px solid ${color}`, opacity: 0.8 }
+                          : { background: color, border: '2px solid #111317' }
+                      }
                     >
-                      {r.id}
+                      {/* front bumper */}
                       <div
-                        className="absolute w-2 h-1 bg-[#fabc4d]"
-                        style={{ transform: `rotate(${r.angle}deg) translate(13px)` }}
+                        className="absolute right-0 top-[12%] h-[76%] w-[18%]"
+                        style={{ background: ours && !hasStack ? color : '#111317' }}
                       />
+                      <span
+                        className="font-bold text-[9px] leading-none"
+                        style={{
+                          transform: `rotate(${-r.angle}deg)`,
+                          color: ours && !hasStack ? color : '#111317',
+                        }}
+                      >
+                        {ours ? r.id : r.label}
+                      </span>
                     </div>
                   </div>
                 );
               })}
-
-              {/* Opponents */}
-              {opponentsOn &&
-                w.opponents.map((o) => (
-                  <div
-                    key={o.id}
-                    className="absolute z-10 pointer-events-none"
-                    style={{ left: `${pctX(o.x)}%`, top: `${pctY(o.y)}%`, transform: 'translate(-50%, -50%)' }}
-                  >
-                    <div className="w-6 h-6 bg-[#22252A] border border-white text-white font-bold text-[10px] flex items-center justify-center rotate-45">
-                      <span className="-rotate-45">{o.label}</span>
-                    </div>
-                  </div>
-                ))}
             </div>
           </div>
 
           <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-xs text-[#8E95A5] font-mono">
-            <span>Drag the ball to place it — flick and release to throw it.</span>
             <span>
-              Attacking <span className="text-[#e54d42] font-bold">→ right goal</span>, defending{' '}
-              <span className="text-[#3DD68C] font-bold">left goal</span>
+              Drag the ball to place it — flick and release to throw it. Drag a robot to move it
+              (pause first to set up a position).
+            </span>
+            <span>
+              <span className="font-bold" style={{ color: TEAM_COLORS.us }}>■ Us</span> attack{' '}
+              <span className="font-bold" style={{ color: TEAM_COLORS.them }}>→ right goal</span> ·{' '}
+              <span className="font-bold" style={{ color: TEAM_COLORS.them }}>■ Opponents</span> attack{' '}
+              <span className="font-bold" style={{ color: TEAM_COLORS.us }}>← left goal</span>
             </span>
           </div>
         </div>
@@ -460,9 +531,9 @@ export const SimulationView: React.FC<SimulationViewProps> = ({ strategy, onEdit
               </span>
               <span className="flex items-center gap-1.5 text-xs font-mono font-bold">
                 <Trophy className="w-3.5 h-3.5 text-[#fabc4d]" />
-                <span className="text-[#3DD68C]">{w.score.us}</span>
+                <span style={{ color: TEAM_COLORS.us }}>{w.score.us}</span>
                 <span className="text-[#8E95A5]">:</span>
-                <span className="text-[#e54d42]">{w.score.them}</span>
+                <span style={{ color: TEAM_COLORS.them }}>{w.score.them}</span>
                 <span className="text-[#8E95A5] ml-1">{fmtTime}</span>
               </span>
             </div>

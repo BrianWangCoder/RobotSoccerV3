@@ -333,9 +333,9 @@ export const LivePlayView: React.FC<LivePlayViewProps> = ({
                   }}
                 >
                   <div className="relative">
-                    {/* Bot Body Circle */}
+                    {/* Bot Body (square) */}
                     <div
-                      className={`w-8 h-8 rounded-full border-2 flex items-center justify-center font-bold text-xs shadow-md ${
+                      className={`relative w-8 h-8 border-2 flex items-center justify-center font-bold text-xs shadow-md ${
                         selectedTeam === 'RED'
                           ? 'bg-[#3b2d2d] border-[#ff7a70] text-white'
                           : 'bg-[#212b3d] border-[#60a5fa] text-white'
@@ -392,7 +392,7 @@ export const LivePlayView: React.FC<LivePlayViewProps> = ({
                   transform: 'translate(-50%, -50%)',
                 }}
               >
-                <div className="text-xs text-white">◆</div>
+                <div className="w-3 h-3 bg-white border border-[#111317]" />
                 <span className="text-xs font-bold text-white font-mono tracking-wider">
                   {opp.id}
                 </span>

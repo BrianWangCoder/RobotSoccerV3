@@ -31,7 +31,8 @@ import {
   BlockType,
 } from '../types/strategy';
 import { BlockPreview, PreviewSpec } from './BlockPreview';
-import { parsePoint, parseNum, NAMED_SPOTS } from '../sim/engine';
+import { parsePoint, parseNum, NAMED_SPOTS, FIELD } from '../sim/engine';
+import { PitchLines, PITCH_VIEWBOX } from './PitchLines';
 import {
   Pt,
   ZoneMode,
@@ -99,7 +100,7 @@ const BLOCK_DEFS: Record<BlockType, BlockDef> = {
     input: 'bg-[#2d4a85]',
     fields: [
       { key: 'start', label: 'Start', width: 'w-16', def: '[0, 0]' },
-      { key: 'stop', label: 'Stop', width: 'w-20', def: '[120, -50]' },
+      { key: 'stop', label: 'Stop', width: 'w-20', def: '[40, -15]' },
       { key: 'speed', label: 'Speed', width: 'w-14', def: '80%' },
     ],
   },
@@ -132,9 +133,9 @@ const BLOCK_DEFS: Record<BlockType, BlockDef> = {
     hover: 'hover:bg-[#357a4e]',
     input: 'bg-[#357a4e]',
     fields: [
-      { key: 'left', label: 'Left', width: 'w-20', def: '[-250, 120]', alias: 'start' },
-      { key: 'right', label: 'Right', width: 'w-20', def: '[-250, -120]', alias: 'stop' },
-      { key: 'kickout', label: 'Kick-out', width: 'w-10', def: '60', kind: 'stepper', step: 10, min: 0, max: 300, unit: 'cm' },
+      { key: 'left', label: 'Left', width: 'w-20', def: '[-79, 40]', alias: 'start' },
+      { key: 'right', label: 'Right', width: 'w-20', def: '[-79, -40]', alias: 'stop' },
+      { key: 'kickout', label: 'Kick-out', width: 'w-10', def: '25', kind: 'stepper', step: 5, min: 0, max: 100, unit: 'cm' },
     ],
   },
   goalkeeper: {
@@ -147,7 +148,7 @@ const BLOCK_DEFS: Record<BlockType, BlockDef> = {
     fields: [
       { key: 'left', label: 'Left', width: 'w-20', def: '[Post L]', alias: 'start' },
       { key: 'right', label: 'Right', width: 'w-20', def: '[Post R]', alias: 'stop' },
-      { key: 'kickout', label: 'Kick-out', width: 'w-10', def: '40', kind: 'stepper', step: 10, min: 0, max: 300, unit: 'cm' },
+      { key: 'kickout', label: 'Kick-out', width: 'w-10', def: '15', kind: 'stepper', step: 5, min: 0, max: 100, unit: 'cm' },
     ],
   },
   kickA: {
@@ -160,7 +161,7 @@ const BLOCK_DEFS: Record<BlockType, BlockDef> = {
     fields: [
       { key: 'threshold', label: 'Align', width: 'w-12', def: '0.85' },
       { key: 'speed', label: 'Speed', width: 'w-14', def: '95%' },
-      { key: 'runup', label: 'Run-up', width: 'w-10', def: '40', kind: 'stepper', step: 5, min: 5, max: 150, unit: 'cm' },
+      { key: 'runup', label: 'Run-up', width: 'w-10', def: '25', kind: 'stepper', step: 5, min: 5, max: 60, unit: 'cm' },
     ],
   },
   kickB: {
@@ -173,7 +174,7 @@ const BLOCK_DEFS: Record<BlockType, BlockDef> = {
     fields: [
       { key: 'threshold', label: 'Align', width: 'w-12', def: '0.65' },
       { key: 'speed', label: 'Speed', width: 'w-14', def: '75%' },
-      { key: 'runup', label: 'Run-up', width: 'w-10', def: '30', kind: 'stepper', step: 5, min: 5, max: 150, unit: 'cm' },
+      { key: 'runup', label: 'Run-up', width: 'w-10', def: '20', kind: 'stepper', step: 5, min: 5, max: 60, unit: 'cm' },
     ],
   },
 };
@@ -462,9 +463,9 @@ const HatView: React.FC<HatViewProps> = ({
 /* Zone drawing helpers                                                */
 /* ------------------------------------------------------------------ */
 
-/** Field outline inside the 400x300 SVG is x 20..380, y 20..280 → dots sit exactly on it. */
-const FIELD_INSET_X = (20 / 400) * 100; // %
-const FIELD_INSET_Y = (20 / 300) * 100; // %
+/** The pitch card shows the field plus run-off; the dot lattice sits exactly on the field lines. */
+const FIELD_INSET_X = ((FIELD.outerX - FIELD.halfX) / (2 * FIELD.outerX)) * 100; // %
+const FIELD_INSET_Y = ((FIELD.outerY - FIELD.halfY) / (2 * FIELD.outerY)) * 100; // %
 
 /* ------------------------------------------------------------------ */
 /* Main view                                                           */
@@ -1558,9 +1559,9 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
             routine: rangeRoutine,
             block: rangeBlock,
             label: isGK ? 'GoalKeeper' : 'Defender',
-            left: parsePoint(val('left')) ?? (isGK ? NAMED_SPOTS['post l'] : [-2500, -1200]),
-            right: parsePoint(val('right')) ?? (isGK ? NAMED_SPOTS['post r'] : [-2500, 1200]),
-            kickoutCm: parseNum(val('kickout'), isGK ? 40 : 60),
+            left: parsePoint(val('left')) ?? (isGK ? NAMED_SPOTS['post l'] : [-790, -400]),
+            right: parsePoint(val('right')) ?? (isGK ? NAMED_SPOTS['post r'] : [-790, 400]),
+            kickoutCm: parseNum(val('kickout'), isGK ? 15 : 25),
           };
         })()
       : null;
@@ -1589,8 +1590,8 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
     const r = el.getBoundingClientRect();
     const u = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width));
     const v = Math.max(0, Math.min(1, (e.clientY - r.top) / r.height));
-    const xmm = -4200 + u * 8400;
-    const ymm = -2800 + v * 5600;
+    const xmm = -FIELD.halfX + u * 2 * FIELD.halfX;
+    const ymm = -FIELD.halfY + v * 2 * FIELD.halfY;
     const snap = (n: number) => Math.round(n / 5) * 5; // 5 cm steps
     return `[${snap(xmm / 10)}, ${snap(-ymm / 10)}]`;
   };
@@ -1618,13 +1619,13 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
 
   const bumpKickout = (dir: number) => {
     if (!rangeEdit) return;
-    const next = Math.max(0, Math.min(300, rangeEdit.kickoutCm + dir * 10));
+    const next = Math.max(0, Math.min(100, rangeEdit.kickoutCm + dir * 5));
     handleUpdateParam(rangeEdit.routine.id, rangeEdit.block.id, 'kickout', String(next));
   };
 
   // mm → % of the field-lines frame
-  const fx = (x: number) => ((x + 4200) / 8400) * 100;
-  const fy = (y: number) => ((y + 2800) / 5600) * 100;
+  const fx = (x: number) => ((x + FIELD.halfX) / (2 * FIELD.halfX)) * 100;
+  const fy = (y: number) => ((y + FIELD.halfY) / (2 * FIELD.halfY)) * 100;
 
   /* ---------------- preview spec ---------------- */
 
@@ -1633,7 +1634,7 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
     const sit = strategy.situations.find((s) => s.id === situationId);
     const c = sit ? shapeCentroid(shapeOf(sit)) : null;
     if (!c) return [-1500, 300];
-    return [-4200 + c[0] * 8400, -2800 + c[1] * 5600];
+    return [-FIELD.halfX + c[0] * 2 * FIELD.halfX, -FIELD.halfY + c[1] * 2 * FIELD.halfY];
   };
 
   const previewRoutine = preview
@@ -1722,23 +1723,15 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
             </div>
           </div>
 
-          <div className="mt-3 relative bg-[#131B18] border border-[#2D3139] aspect-4/3 w-full overflow-hidden">
+          <div
+            className="mt-3 relative bg-[#1a1c1f] border border-[#2D3139] w-full overflow-hidden"
+            style={{ aspectRatio: `${FIELD.outerX} / ${FIELD.outerY}` }}
+          >
             <svg
-              viewBox="0 0 400 300"
-              className="absolute inset-0 w-full h-full stroke-[#1E3F30] stroke-[1.2] fill-none pointer-events-none"
+              viewBox={PITCH_VIEWBOX}
+              className="absolute inset-0 w-full h-full pointer-events-none"
             >
-              <rect x="20" y="20" width="360" height="260" />
-              <line x1="200" y1="20" x2="200" y2="280" />
-              <circle cx="200" cy="150" r="45" />
-              <circle cx="200" cy="150" r="2" fill="#1E3F30" />
-              <rect x="20" y="70" width="65" height="160" />
-              <rect x="20" y="105" width="25" height="90" />
-              <path d="M 85 115 A 40 40 0 0 1 85 185" />
-              <rect x="8" y="115" width="12" height="70" stroke="#2D3139" />
-              <rect x="315" y="70" width="65" height="160" />
-              <rect x="355" y="105" width="25" height="90" />
-              <path d="M 315 115 A 40 40 0 0 0 315 185" />
-              <rect x="380" y="115" width="12" height="70" stroke="#2D3139" />
+              <PitchLines />
             </svg>
 
             {/* Interaction layer covers the whole card so edge dots are easy to hit */}
@@ -1795,7 +1788,7 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
                 {rangeEdit && (
                   <>
                     <svg
-                      viewBox="-4200 -2800 8400 5600"
+                      viewBox={`${-FIELD.halfX} ${-FIELD.halfY} ${2 * FIELD.halfX} ${2 * FIELD.halfY}`}
                       preserveAspectRatio="none"
                       className="absolute inset-0 w-full h-full overflow-visible pointer-events-none z-20"
                     >
@@ -2014,7 +2007,7 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
                 <span className="flex flex-wrap items-center gap-x-3 gap-y-1">
                   {(
                     [
-                      ['Kick-out', rangeEdit.kickoutCm, bumpKickout, 10],
+                      ['Kick-out', rangeEdit.kickoutCm, bumpKickout, 5],
                     ] as const
                   ).map(([name, value, bump, stepCm]) => (
                     <span key={name} className="flex items-center gap-1">

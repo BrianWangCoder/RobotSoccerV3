@@ -68,8 +68,8 @@ export interface RobotStatus {
   id: number;
   label: string;
   team: 'RED' | 'BLUE';
-  x: number; // field meters [-4.5, 4.5]
-  y: number; // field meters [-3.0, 3.0]
+  x: number; // field metres [-1.325, 1.325] (265 cm field)
+  y: number; // field metres [-0.925, 0.925] (185 cm field)
   angle: number; // radians or degrees
   status: 'ACTIVE' | 'OCCLUDED' | 'OFFLINE';
   battery: number; // percentage

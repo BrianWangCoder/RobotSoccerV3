@@ -3,7 +3,7 @@
  *
  * Coordinates are millimetres with the origin at the centre spot:
  *   +x → towards the OPPONENT goal (right on screen), +y → down on screen.
- * Our goal is on the left (x = -4500).
+ * Our goal is on the left (x = -FIELD.halfX). The field is 265 × 185 cm.
  *
  * Each tick the engine:
  *   1. works out which zone (situation) the ball is in — highest priority wins on overlap,
@@ -20,13 +20,31 @@ import { gridDimsFor, shapeOfSituation, pointInShape, ZoneShape } from '../utils
 /* Constants                                                           */
 /* ------------------------------------------------------------------ */
 
+/**
+ * The real field: 265 × 185 cm of playing surface enclosed by walls (no run-off), with small
+ * angled pieces in the corners and the goals recessed behind the end walls. Markings measured
+ * from a photo of the field. Everything on the pitch derives from these numbers (mm).
+ */
 export const FIELD = {
-  halfX: 4200, // touchline-to-centre along x (field lines)
-  halfY: 2800,
-  outerX: 4500, // drawing extent incl. run-off
-  outerY: 3000,
-  goalHalfW: 800,
-  goalDepth: 250,
+  halfX: 1325, // centre → end wall / goal line
+  halfY: 925, // centre → side wall
+  corner: 70, // leg length of the angled corner pieces
+  goalHalfW: 200, // 40 cm goal mouth
+  goalDepth: 120, // goal recess behind the wall
+  penaltyDepth: 400, // penalty area: 40 cm deep × 80 cm wide, against the end wall
+  penaltyHalfW: 400,
+  goalAreaDepth: 180, // inner goal area: 18 × 50 cm
+  goalAreaHalfW: 250,
+  penaltyArcX: 280, // the arc on the front of the penalty area: centre (from the goal line) …
+  penaltyArcR: 160, // … and radius
+  centerR: 250, // centre circle radius
+  /** Spot marks (± mirrored to all four quarters). */
+  spots: [
+    [350, 610],
+    [950, 610],
+  ] as [number, number][],
+  outerX: 1475, // drawing extent: field + goal recess + a little margin
+  outerY: 955,
 };
 
 /**
@@ -42,7 +60,7 @@ export const PHYSICS = {
   robotMaxSpeed: 1500, // mm/s at 100 % (top speed of each wheel)
   robotAccel: 2500, // mm/s² (how fast each wheel can change speed)
   robotTurnRate: 360, // deg/s — fastest spin on the spot
-  wheelBase: 140, // mm between the two drive wheels
+  wheelBase: 70, // mm between the two drive wheels (8.5 cm robot)
   sideGrip: 8000, // mm/s² — how quickly the tyres kill sideways sliding after a bump
 
   ballMass: 0.0459, // kg
@@ -55,41 +73,44 @@ export const PHYSICS = {
   stopSpeed: 15, // mm/s — below this the ball comes to rest
 };
 
-export const ROBOT_R = 90;
+/** Robots are SQUARE: this is half the side length (8.5 × 8.5 cm body). */
+export const ROBOT_HALF = 42.5;
 export const BALL_R = PHYSICS.ballRadius;
 
 const MAX_SPEED = PHYSICS.robotMaxSpeed;
 const MAX_ACCEL = PHYSICS.robotAccel;
 const MAX_TURN = PHYSICS.robotTurnRate;
 const WHEEL_BASE = PHYSICS.wheelBase;
-const CONTACT = ROBOT_R + BALL_R;
+/** Centre-to-ball distance when the ball touches the middle of a face. */
+const CONTACT = ROBOT_HALF + BALL_R;
 
-const OWN_GOAL: [number, number] = [-FIELD.halfX - 300, 0];
+const OWN_GOAL: [number, number] = [-FIELD.halfX - 100, 0];
 
 /* ------------------------------------------------------------------ */
 /* Named spots usable in block parameters, e.g. [Left Flank]           */
 /* ------------------------------------------------------------------ */
 
+// mm, for the 265 × 185 cm field (see FIELD)
 export const NAMED_SPOTS: Record<string, [number, number]> = {
   center: [0, 0],
   centre: [0, 0],
-  midfield: [-1000, 0],
-  goal: [-4050, 0],
-  'post l': [-4050, -650],
-  'post r': [-4050, 650],
-  'penalty spot': [-3200, 0],
-  'penalty arc': [-2900, 0],
-  'left flank': [-2200, -1800],
-  'right flank': [-2200, 1800],
-  'left corner': [-4000, -2600],
-  'right corner': [-4000, 2600],
-  'opp goal': [4050, 0],
-  'opp post l': [4050, -650],
-  'opp post r': [4050, 650],
-  'opp penalty spot': [3200, 0],
-  'opp penalty arc': [2900, 0],
-  'opp left flank': [2200, -1800],
-  'opp right flank': [2200, 1800],
+  midfield: [-315, 0],
+  goal: [-1275, 0],
+  'post l': [-1275, -150],
+  'post r': [-1275, 150],
+  'penalty spot': [-1045, 0],
+  'penalty arc': [-885, 0],
+  'left flank': [-695, -595],
+  'right flank': [-695, 595],
+  'left corner': [-1240, -840],
+  'right corner': [-1240, 840],
+  'opp goal': [1275, 0],
+  'opp post l': [1275, -150],
+  'opp post r': [1275, 150],
+  'opp penalty spot': [1045, 0],
+  'opp penalty arc': [885, 0],
+  'opp left flank': [695, -595],
+  'opp right flank': [695, 595],
 };
 
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
@@ -198,17 +219,17 @@ interface Command {
 
 /** Kick-off spots (x, y, heading) for robots 1..5. */
 export const FRIENDLY_HOME: [number, number, number][] = [
-  [-1200, 0, 0],
-  [-2400, -800, 0],
-  [-4000, 0, 0],
-  [-2000, 900, 0],
-  [-3000, -1700, 0],
+  [-380, 0, 0],
+  [-755, -265, 0],
+  [-1215, 0, 0],
+  [-630, 300, 0],
+  [-945, -560, 0],
 ];
 const OPP_HOME: [number, number, number][] = [
-  [1200, 400, 180],
-  [2200, -700, 180],
-  [4000, 0, 180],
-  [1800, 900, 180],
+  [380, 130, 180],
+  [695, -230, 180],
+  [1215, 0, 180],
+  [570, 300, 180],
 ];
 
 const freshExec = (): ExecState => ({
@@ -364,8 +385,8 @@ const shadowOnSegment = (
 };
 
 /** Default defender line (left/right as seen facing the opponent goal). */
-const DEFENDER_LEFT: [number, number] = [-2500, -1200];
-const DEFENDER_RIGHT: [number, number] = [-2500, 1200];
+const DEFENDER_LEFT: [number, number] = [-790, -400];
+const DEFENDER_RIGHT: [number, number] = [-790, 400];
 
 /** Shortest distance from (px, py) to segment AB (mm). */
 const distToSegment = (px: number, py: number, a: [number, number], b: [number, number]) => {
@@ -419,7 +440,7 @@ const planKick = (
   // Run-up: gap between the robot's bumper and the ball when it starts its strike.
   // A short run-up can't reach full speed, so it limits how hard the ball is hit.
   const auto = (MAX_SPEED * strike) ** 2 / (2 * MAX_ACCEL) + 60;
-  const runUp = clamp(runUpMm ?? auto, 30, 1500);
+  const runUp = clamp(runUpMm ?? auto, 30, 600); // small field: never back off more than 60 cm
   const reachable = Math.min(MAX_SPEED * strike, Math.sqrt(2 * MAX_ACCEL * runUp));
   const behind: [number, number] = [b.x - dx * (CONTACT + runUp), b.y - dy * (CONTACT + runUp)];
 
@@ -454,8 +475,8 @@ const planKick = (
     const side = (bot.x - b.x) * -dy + (bot.y - b.y) * dx >= 0 ? 1 : -1;
     st.status = `${label}: circling ball`;
     return {
-      tx: behind[0] + -dy * side * 300,
-      ty: behind[1] + dx * side * 300,
+      tx: behind[0] + -dy * side * 200,
+      ty: behind[1] + dx * side * 200,
       speed: 0.7,
       face,
       spin: 0,
@@ -538,7 +559,7 @@ const runBlock = (
         parsePoint(p.left ?? p.start) ?? (isGK ? NAMED_SPOTS['post l'] : DEFENDER_LEFT);
       const b =
         parsePoint(p.right ?? p.stop) ?? (isGK ? NAMED_SPOTS['post r'] : DEFENDER_RIGHT);
-      const kickout = clamp(parseNum(p.kickout, isGK ? 40 : 60), 0, 400) * 10; // cm → mm
+      const kickout = clamp(parseNum(p.kickout, isGK ? 15 : 25), 0, 100) * 10; // cm → mm
       const ballToLine = distToSegment(ball.x, ball.y, a, b);
       // Everything this block does stays inside its range (kick-out distance around the line)
       const out = (cmd: Command, done = false): BlockResult => ({
@@ -659,14 +680,15 @@ const runBlock = (
       let aim: [number, number];
       if (block.type === 'kickA') {
         const keeper = w.opponentsEnabled ? w.opponents.find((o) => o.id === 103) : undefined;
-        aim = [FIELD.halfX + 200, keeper ? (keeper.y > 0 ? -480 : 480) : 0];
+        const corner = FIELD.goalHalfW * 0.6;
+        aim = [FIELD.halfX + 80, keeper ? (keeper.y > 0 ? -corner : corner) : 0];
       } else {
         const mates = w.friendly
           .filter((m) => m.id !== bot.id)
           .map((m) => ({ m, fwd: m.x - ball.x, d: hyp(m.x - ball.x, m.y - ball.y) }))
-          .filter((o) => o.d > 500)
+          .filter((o) => o.d > 250)
           .sort((a, b) => b.fwd - a.fwd || a.d - b.d);
-        aim = mates.length ? [mates[0].m.x, mates[0].m.y] : [FIELD.halfX + 200, 0];
+        aim = mates.length ? [mates[0].m.x, mates[0].m.y] : [FIELD.halfX + 80, 0];
       }
       return {
         cmd: planKick(
@@ -702,12 +724,12 @@ const opponentCommand = (w: SimWorld, o: SimRobot): Command => {
     const dy = OWN_GOAL[1] - b.y;
     const l = hyp(dx, dy) || 1;
     // back off a short run-up, then drive through the ball (same physics as our robots)
-    const bx = b.x - (dx / l) * (CONTACT + 350);
-    const by = b.y - (dy / l) * (CONTACT + 350);
-    const close = hyp(o.x - bx, o.y - by) < 140 || hyp(o.x - b.x, o.y - b.y) < CONTACT + 300;
+    const bx = b.x - (dx / l) * (CONTACT + 200);
+    const by = b.y - (dy / l) * (CONTACT + 200);
+    const close = hyp(o.x - bx, o.y - by) < 100 || hyp(o.x - b.x, o.y - b.y) < CONTACT + 180;
     return {
-      tx: close ? b.x + (dx / l) * 800 : bx,
-      ty: close ? b.y + (dy / l) * 800 : by,
+      tx: close ? b.x + (dx / l) * 400 : bx,
+      ty: close ? b.y + (dy / l) * 400 : by,
       speed: 0.75,
       face: (Math.atan2(dy, dx) * 180) / Math.PI,
       spin: 0,
@@ -716,8 +738,8 @@ const opponentCommand = (w: SimWorld, o: SimRobot): Command => {
   }
   if (o.id === 103) {
     return {
-      tx: FIELD.halfX - 150,
-      ty: clamp(b.y * 0.8, -650, 650),
+      tx: FIELD.halfX - 110,
+      ty: clamp(b.y * 0.8, -(FIELD.goalHalfW - 60), FIELD.goalHalfW - 60),
       speed: 1,
       face: 180,
       spin: 0,
@@ -726,8 +748,8 @@ const opponentCommand = (w: SimWorld, o: SimRobot): Command => {
   }
   const homeY = o.home[1];
   return {
-    tx: clamp(b.x + 900, 300, 2600),
-    ty: clamp(homeY + (b.y - homeY) * 0.35, -2400, 2400),
+    tx: clamp(b.x + 300, 100, 820),
+    ty: clamp(homeY + (b.y - homeY) * 0.35, -(FIELD.halfY - 150), FIELD.halfY - 150),
     speed: 0.6,
     face: (Math.atan2(b.y - o.y, b.x - o.x) * 180) / Math.PI,
     spin: 0,
@@ -809,34 +831,39 @@ const drive = (r: SimRobot, c: Command, dt: number) => {
     omega = steer(angleDiff(r.angle, c.face), 8);
   }
 
+  let brakeStraight = false;
   if (c.fence) {
+    // The allowed area is a capsule (every point within `max` of segment a–b) — convex, so along
+    // any straight line the robot can only travel a certain distance before leaving it.
     const { a, b, max } = c.fence;
-    const sx = b[0] - a[0];
-    const sy = b[1] - a[1];
-    const t = clamp(((r.x - a[0]) * sx + (r.y - a[1]) * sy) / (sx * sx + sy * sy || 1), 0, 1);
-    const ox = r.x - (a[0] + t * sx);
-    const oy = r.y - (a[1] + t * sy);
-    const od = hyp(ox, oy);
-    if (od > 1) {
-      const room = Math.max(0, max - od);
-      // Braking happens along the heading, so stopping distance OUTWARDS is the straight-line
-      // stopping distance × how much the heading points out (+ margin in case it swings further)
-      const brake = 2 * MAX_ACCEL * 0.7;
-      const outShare = (hx * ox + hy * oy) / od;
-      const reach = (share: number) => Math.min(1, share + 0.25);
-      const cur = (r.wl + r.wr) / 2;
-      const curOut = Math.sign(cur) * outShare;
-      if (curOut > 0 && ((cur * cur) / brake) * reach(curOut) >= room) {
-        // About to run out of room → brake hard on BOTH wheels, no turning until stopped
-        v = 0;
-        omega = 0;
-      } else {
-        const out = Math.sign(v) * outShare;
-        if (out > 0) {
-          const cap = Math.sqrt((brake * room) / reach(out));
-          if (Math.abs(v) > cap) v = Math.sign(v) * cap;
-        }
+    const inside = (x: number, y: number) => distToSegment(x, y, a, b) <= max;
+    const brake = 2 * MAX_ACCEL * 0.7; // keep 30 % of the motors' braking in reserve
+    /** How far the robot can roll along its heading (dir = ±1) and still be inside. */
+    const room = (dir: number) => {
+      if (!inside(r.x, r.y)) return 0;
+      let lo = 0;
+      let hi = 2 * (max + hyp(b[0] - a[0], b[1] - a[1])) + 10;
+      for (let i = 0; i < 18; i++) {
+        const mid = (lo + hi) / 2;
+        if (inside(r.x + hx * dir * mid, r.y + hy * dir * mid)) lo = mid;
+        else hi = mid;
       }
+      return Math.max(0, lo - 5);
+    };
+    const cur = (r.wl + r.wr) / 2;
+    if (!inside(r.x, r.y)) {
+      // Outside (pushed out by a bump): only moves that bring it back in are allowed
+      const d0 = distToSegment(r.x, r.y, a, b);
+      const step = Math.sign(v) * 10;
+      if (v && distToSegment(r.x + hx * step, r.y + hy * step, a, b) >= d0) v = 0;
+    } else if (cur && (cur * cur) / brake >= room(Math.sign(cur))) {
+      // Can only just stop in the room left → brake hard, in a straight line
+      v = 0;
+      omega = 0;
+      brakeStraight = true;
+    } else if (v) {
+      const cap = Math.sqrt(brake * room(Math.sign(v)));
+      if (Math.abs(v) > cap) v = Math.sign(v) * cap;
     }
   }
 
@@ -848,6 +875,12 @@ const drive = (r: SimRobot, c: Command, dt: number) => {
   if (over > 1) {
     tl /= over;
     tr /= over;
+  }
+
+  // Braking straight: if one wheel is faster the robot would keep curving while it slows, so
+  // first bring the faster wheel down to the slower one (a few hundredths of a second), then stop
+  if (brakeStraight && Math.abs(r.wl - r.wr) > 1) {
+    tl = tr = Math.abs(r.wl) < Math.abs(r.wr) ? r.wl : r.wr;
   }
 
   // Each motor can only change speed so fast. Both wheels are ramped together (same fraction of
@@ -871,8 +904,33 @@ const drive = (r: SimRobot, c: Command, dt: number) => {
   r.vx = nhx * fwd - nhy * sideLeft;
   r.vy = nhy * fwd + nhx * sideLeft;
 
-  r.x = clamp(r.x + r.vx * dt, -FIELD.outerX + ROBOT_R, FIELD.outerX - ROBOT_R);
-  r.y = clamp(r.y + r.vy * dt, -FIELD.outerY + ROBOT_R, FIELD.outerY - ROBOT_R);
+  r.x += r.vx * dt;
+  r.y += r.vy * dt;
+  keepInsideWalls(r);
+};
+
+/** Distance from the centre to each angled corner wall, measured along its normal. */
+const CORNER_LIMIT = (FIELD.halfX + FIELD.halfY - FIELD.corner) / Math.SQRT2;
+
+/** Keeps a (turned) square robot inside the walls, including the angled corner pieces. */
+const keepInsideWalls = (r: SimRobot) => {
+  const rad = (r.angle * Math.PI) / 180;
+  const c = Math.cos(rad);
+  const s = Math.sin(rad);
+  // how far the square sticks out along a direction (nx, ny)
+  const support = (nx: number, ny: number) =>
+    ROBOT_HALF * (Math.abs(c * nx + s * ny) + Math.abs(-s * nx + c * ny));
+  const rx = support(1, 0);
+  const ry = support(0, 1);
+  r.x = clamp(r.x, -FIELD.halfX + rx, FIELD.halfX - rx);
+  r.y = clamp(r.y, -FIELD.halfY + ry, FIELD.halfY - ry);
+  const nx = (Math.sign(r.x) || 1) / Math.SQRT2;
+  const ny = (Math.sign(r.y) || 1) / Math.SQRT2;
+  const over = r.x * nx + r.y * ny + support(nx, ny) - CORNER_LIMIT;
+  if (over > 0) {
+    r.x -= nx * over;
+    r.y -= ny * over;
+  }
 };
 
 /**
@@ -884,19 +942,55 @@ const drive = (r: SimRobot, c: Command, dt: number) => {
  */
 const ballContact = (w: SimWorld, r: SimRobot, kick: Command['kick']): boolean => {
   const b = w.ball;
+  const H = ROBOT_HALF;
+  const rad = (r.angle * Math.PI) / 180;
+  const c = Math.cos(rad);
+  const s = Math.sin(rad);
+  // Ball centre in the robot's frame (x = forward)
   const dx = b.x - r.x;
   const dy = b.y - r.y;
-  const d = hyp(dx, dy);
-  if (d >= CONTACT) return false;
+  const lx = dx * c + dy * s;
+  const ly = -dx * s + dy * c;
+  if (Math.abs(lx) > H + BALL_R || Math.abs(ly) > H + BALL_R) return false;
 
-  const nx = d ? dx / d : 1;
-  const ny = d ? dy / d : 0;
+  // Closest point on the square's outline + outward normal (robot frame)
+  let qx = clamp(lx, -H, H);
+  let qy = clamp(ly, -H, H);
+  let nlx: number;
+  let nly: number;
+  if (qx === lx && qy === ly) {
+    // centre got inside the body (fast hit): push out through the nearest face
+    if (H - Math.abs(lx) < H - Math.abs(ly)) {
+      nlx = Math.sign(lx) || 1;
+      nly = 0;
+      qx = nlx * H;
+    } else {
+      nlx = 0;
+      nly = Math.sign(ly) || 1;
+      qy = nly * H;
+    }
+  } else {
+    const ex = lx - qx;
+    const ey = ly - qy;
+    const d = hyp(ex, ey);
+    if (d >= BALL_R) return false;
+    nlx = ex / d;
+    nly = ey / d;
+  }
+  const nx = nlx * c - nly * s;
+  const ny = nlx * s + nly * c;
+  const px = qx * c - qy * s; // contact point relative to the robot centre (world)
+  const py = qx * s + qy * c;
 
   // resolve overlap — the robot is ~17× heavier, so the ball does the moving
-  b.x = r.x + nx * CONTACT;
-  b.y = r.y + ny * CONTACT;
+  b.x = r.x + px + nx * BALL_R;
+  b.y = r.y + py + ny * BALL_R;
 
-  const vRel = (r.vx - b.vx) * nx + (r.vy - b.vy) * ny; // closing speed along the normal
+  // Speed of the robot's surface at the contact point (a spinning square swats the ball)
+  const yaw = (r.wr - r.wl) / WHEEL_BASE; // rad/s
+  const svx = r.vx - yaw * py;
+  const svy = r.vy + yaw * px;
+  const vRel = (svx - b.vx) * nx + (svy - b.vy) * ny; // closing speed along the normal
   if (vRel <= 0) return false; // already separating
 
   const { ballMass: m, robotMass: M, restitution: e, rollFactor } = PHYSICS;
@@ -912,21 +1006,48 @@ const ballContact = (w: SimWorld, r: SimRobot, kick: Command['kick']): boolean =
   return align >= kick.minAlign && vRel > (kick.minSpeed ?? 150); // a real hit, not a gentle nudge
 };
 
+/** Square-vs-square overlap (separating axis test); pushes both apart along the shallowest axis. */
 const separateRobots = (all: SimRobot[]) => {
+  const H = ROBOT_HALF;
   for (let i = 0; i < all.length; i++) {
     for (let j = i + 1; j < all.length; j++) {
       const a = all[i];
       const b = all[j];
       const dx = b.x - a.x;
       const dy = b.y - a.y;
-      const d = hyp(dx, dy) || 0.01;
-      const min = ROBOT_R * 2;
-      if (d < min) {
-        const push = (min - d) / 2;
-        a.x -= (dx / d) * push;
-        a.y -= (dy / d) * push;
-        b.x += (dx / d) * push;
-        b.y += (dy / d) * push;
+      if (hyp(dx, dy) > 2 * H * Math.SQRT2) continue; // too far apart to touch
+      const ra = (a.angle * Math.PI) / 180;
+      const rb = (b.angle * Math.PI) / 180;
+      const axes: [number, number][] = [
+        [Math.cos(ra), Math.sin(ra)],
+        [-Math.sin(ra), Math.cos(ra)],
+        [Math.cos(rb), Math.sin(rb)],
+        [-Math.sin(rb), Math.cos(rb)],
+      ];
+      // projected half-width of a square with axes (u, v) onto n
+      const extent = (ang: number, n: [number, number]) =>
+        H * (Math.abs(Math.cos(ang) * n[0] + Math.sin(ang) * n[1]) +
+          Math.abs(-Math.sin(ang) * n[0] + Math.cos(ang) * n[1]));
+      let best = Infinity;
+      let bn: [number, number] = [1, 0];
+      for (const n of axes) {
+        const dist = dx * n[0] + dy * n[1];
+        const overlap = extent(ra, n) + extent(rb, n) - Math.abs(dist);
+        if (overlap <= 0) {
+          best = 0;
+          break;
+        }
+        if (overlap < best) {
+          best = overlap;
+          bn = dist >= 0 ? n : [-n[0], -n[1]];
+        }
+      }
+      if (best > 0 && best < Infinity) {
+        const push = best / 2;
+        a.x -= bn[0] * push;
+        a.y -= bn[1] * push;
+        b.x += bn[0] * push;
+        b.y += bn[1] * push;
       }
     }
   }
@@ -943,17 +1064,39 @@ const stepBall = (w: SimWorld, dt: number): 'us' | 'them' | null => {
     b.vx *= ns / sp;
     b.vy *= ns / sp;
   }
+  const px = b.x;
   b.x += b.vx * dt;
   b.y += b.vy * dt;
 
-  if (Math.abs(b.x) > FIELD.halfX) {
-    if (Math.abs(b.y) < FIELD.goalHalfW) return b.x > 0 ? 'us' : 'them';
-    b.x = Math.sign(b.x) * FIELD.halfX;
+  // Goal: the ball crosses a goal line inside the goal mouth
+  if (Math.abs(px) <= FIELD.halfX && Math.abs(b.x) > FIELD.halfX && Math.abs(b.y) < FIELD.goalHalfW) {
+    return b.x > 0 ? 'us' : 'them';
+  }
+  // Otherwise it bounces off the walls (the goal mouths are open)
+  const wx = FIELD.halfX - BALL_R;
+  const wy = FIELD.halfY - BALL_R;
+  if (Math.abs(b.x) > wx && Math.abs(b.y) >= FIELD.goalHalfW) {
+    b.x = Math.sign(b.x) * wx;
     b.vx = -b.vx * PHYSICS.wallRestitution;
   }
-  if (Math.abs(b.y) > FIELD.halfY) {
-    b.y = Math.sign(b.y) * FIELD.halfY;
+  if (Math.abs(b.y) > wy) {
+    b.y = Math.sign(b.y) * wy;
     b.vy = -b.vy * PHYSICS.wallRestitution;
+  }
+  // Angled corner pieces
+  const sx = Math.sign(b.x) || 1;
+  const sy = Math.sign(b.y) || 1;
+  const over = (Math.abs(b.x) + Math.abs(b.y)) / Math.SQRT2 + BALL_R - CORNER_LIMIT;
+  if (over > 0) {
+    const nx = sx / Math.SQRT2;
+    const ny = sy / Math.SQRT2;
+    b.x -= nx * over;
+    b.y -= ny * over;
+    const vn = b.vx * nx + b.vy * ny;
+    if (vn > 0) {
+      b.vx -= (1 + PHYSICS.wallRestitution) * vn * nx;
+      b.vy -= (1 + PHYSICS.wallRestitution) * vn * ny;
+    }
   }
   return null;
 };

@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ScriptBlock, StrategyConfig } from '../types/strategy';
-import { FIELD, FRIENDLY_HOME, SimWorld, createWorld, step } from '../sim/engine';
+import { FIELD, FRIENDLY_HOME, ROBOT_HALF, SimWorld, createWorld, step } from '../sim/engine';
 
 /** What to preview: one robot running a list of blocks (a single block or its whole stack). */
 export interface PreviewSpec {
@@ -139,8 +139,8 @@ export const BlockPreview: React.FC<BlockPreviewProps> = ({ spec, box }) => {
             // Tactical roles react to the ball, so move it around the zone to show that
             if (tacticalOnly) {
               const t = w.time;
-              w.ball.x = spec.ball[0] + Math.cos(t * 0.9) * 700;
-              w.ball.y = spec.ball[1] + Math.sin(t * 1.3) * 550;
+              w.ball.x = spec.ball[0] + Math.cos(t * 0.9) * 220;
+              w.ball.y = spec.ball[1] + Math.sin(t * 1.3) * 180;
               w.ball.vx = 0;
               w.ball.vy = 0;
             }
@@ -224,17 +224,20 @@ export const BlockPreview: React.FC<BlockPreviewProps> = ({ spec, box }) => {
         style={{ left: `${px(w.ball.x)}%`, top: `${py(w.ball.y)}%` }}
       />
 
-      {/* Robot */}
+      {/* Robot: 8.5 cm square to scale (min 12 px so it stays visible), bar = front */}
       <div
-        className="absolute -translate-x-1/2 -translate-y-1/2"
-        style={{ left: `${px(bot.x)}%`, top: `${py(bot.y)}%` }}
+        className="absolute"
+        style={{
+          left: `${px(bot.x)}%`,
+          top: `${py(bot.y)}%`,
+          width: `max(${((2 * ROBOT_HALF) / (2 * FIELD.halfX)) * box.width}%, 12px)`,
+          aspectRatio: '1',
+          transform: `translate(-50%, -50%) rotate(${bot.angle}deg)`,
+        }}
       >
-        <div className="relative w-4 h-4 rounded-full bg-[#0c4a6e] border-2 border-[#38bdf8] text-white text-[8px] font-bold flex items-center justify-center shadow-[0_0_8px_#38bdf8]">
-          {spec.robotId}
-          <div
-            className="absolute w-1.5 h-[3px] bg-[#38bdf8]"
-            style={{ transform: `rotate(${bot.angle}deg) translate(8px)` }}
-          />
+        <div className="relative w-full h-full bg-[#0c4a6e] border border-[#38bdf8] text-white text-[7px] font-bold flex items-center justify-center shadow-[0_0_8px_#38bdf8]">
+          <div className="absolute right-0 top-[12%] h-[76%] w-[18%] bg-[#38bdf8]" />
+          <span style={{ transform: `rotate(${-bot.angle}deg)` }}>{spec.robotId}</span>
         </div>
       </div>
 
