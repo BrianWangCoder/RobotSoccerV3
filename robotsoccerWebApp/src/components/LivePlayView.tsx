@@ -14,6 +14,21 @@ import {
   Sliders,
 } from 'lucide-react';
 import { StrategyConfig } from '../types/strategy';
+import { FIELD, ROBOT_HALF, BALL_R } from '../sim/engine';
+import { PitchLines, PITCH_VIEWBOX, PITCH_SURROUND, TEAM_COLORS } from './PitchLines';
+
+/*
+ * Positions here are % of the PLAYING FIELD (wall to wall, 265 × 185 cm), drawn on the same pitch
+ * as the Simulation and Strategy screens. These helpers place them on the drawing (field + margin).
+ */
+const INSET_X = ((FIELD.outerX - FIELD.halfX) / (2 * FIELD.outerX)) * 100;
+const INSET_Y = ((FIELD.outerY - FIELD.halfY) / (2 * FIELD.outerY)) * 100;
+const drawX = (fieldPct: number) => INSET_X + (fieldPct / 100) * (100 - 2 * INSET_X);
+const drawY = (fieldPct: number) => INSET_Y + (fieldPct / 100) * (100 - 2 * INSET_Y);
+/** True-to-scale sizes as % of the drawing width (8.5 cm robots, Ø4.3 cm ball). */
+const ROBOT_W = ((2 * ROBOT_HALF) / (2 * FIELD.outerX)) * 100;
+const BALL_W = ((2 * BALL_R) / (2 * FIELD.outerX)) * 100;
+const toMetres = (pct: number, half: number) => Number((((pct / 100) * 2 - 1) * (half / 1000)).toFixed(2));
 
 interface LivePlayViewProps {
   strategy: StrategyConfig;
@@ -23,8 +38,8 @@ interface LivePlayViewProps {
 interface RobotTelemetry {
   id: number;
   label: string;
-  x: number; // percentage on field 0..100
-  y: number; // percentage on field 0..100
+  x: number; // % of the playing field (wall to wall) 0..100
+  y: number; // % of the playing field (wall to wall) 0..100
   angle: number; // degrees
   status: 'ACTIVE' | 'OCCLUDED' | 'OFFLINE';
   battery: number;
@@ -55,8 +70,8 @@ export const LivePlayView: React.FC<LivePlayViewProps> = ({
 
   // Ball position on field (normalized coordinates in meters and percentage)
   const [ballPos, setBallPos] = useState<{ x: number; y: number; pctX: number; pctY: number }>({
-    x: 1.82,
-    y: 1.45,
+    x: toMetres(37, FIELD.halfX),
+    y: toMetres(52, FIELD.halfY),
     pctX: 37,
     pctY: 52,
   });
@@ -129,12 +144,15 @@ export const LivePlayView: React.FC<LivePlayViewProps> = ({
   const updateBallFromMouse = (e: React.MouseEvent<HTMLDivElement>) => {
     if (!fieldRef.current) return;
     const rect = fieldRef.current.getBoundingClientRect();
-    const xPct = Math.max(5, Math.min(95, ((e.clientX - rect.left) / rect.width) * 100));
-    const yPct = Math.max(5, Math.min(95, ((e.clientY - rect.top) / rect.height) * 100));
+    // pointer → % of the drawing → % of the playing field (kept inside the walls)
+    const dx = ((e.clientX - rect.left) / rect.width) * 100;
+    const dy = ((e.clientY - rect.top) / rect.height) * 100;
+    const xPct = Math.max(1, Math.min(99, ((dx - INSET_X) / (100 - 2 * INSET_X)) * 100));
+    const yPct = Math.max(1, Math.min(99, ((dy - INSET_Y) / (100 - 2 * INSET_Y)) * 100));
 
-    // Convert to field meters [-4.5 to 4.5] and [-3.0 to 3.0]
-    const meterX = Number(((xPct / 100) * 9 - 4.5).toFixed(2));
-    const meterY = Number(((yPct / 100) * 6 - 3.0).toFixed(2));
+    // Field metres from the centre spot (265 × 185 cm field)
+    const meterX = toMetres(xPct, FIELD.halfX);
+    const meterY = toMetres(yPct, FIELD.halfY);
 
     setBallPos({
       x: meterX,
@@ -184,7 +202,7 @@ export const LivePlayView: React.FC<LivePlayViewProps> = ({
 
   return (
     <div
-      className="flex-1 flex flex-col w-full bg-[#0F1115] text-[#e2e2e8] overflow-hidden select-none"
+      className="flex-1 min-h-0 flex flex-col w-full bg-[#0F1115] text-[#e2e2e8] overflow-hidden select-none"
       onMouseUp={handleFieldMouseUp}
     >
       {/* Subheader Bar matching Screenshot 2 */}
@@ -220,9 +238,9 @@ export const LivePlayView: React.FC<LivePlayViewProps> = ({
       </div>
 
       {/* Main Cockpit Layout: Live Field View (Left) and Match Controls (Right) */}
-      <div className="flex-1 grid grid-cols-1 lg:grid-cols-12 gap-0 overflow-hidden">
+      <div className="flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-12 lg:grid-rows-1 gap-0 overflow-hidden">
         {/* LEFT PANE: LIVE FIELD VIEW (8 or 9 columns) */}
-        <div className="lg:col-span-8 xl:col-span-9 border-r border-[#2D3139] bg-[#111317] flex flex-col p-4 overflow-hidden">
+        <div className="lg:col-span-8 xl:col-span-9 min-h-0 border-r border-[#2D3139] bg-[#111317] flex flex-col p-4 overflow-hidden">
           {/* Header row inside Field Card */}
           <div className="flex items-center justify-between pb-2 mb-2 border-b border-[#2D3139]/50">
             <div className="text-xs font-bold uppercase tracking-wider text-[#fabc4d]">
@@ -242,162 +260,111 @@ export const LivePlayView: React.FC<LivePlayViewProps> = ({
             </div>
           </div>
 
-          {/* Tactical Pitch Visualizer Area */}
-          <div
-            ref={fieldRef}
-            onMouseDown={handleFieldMouseDown}
-            onMouseMove={handleFieldMouseMove}
-            className="relative flex-1 bg-[#131B18] border border-[#2D3139] overflow-hidden flex items-center justify-center cursor-crosshair shadow-inner"
-            style={{ minHeight: '380px' }}
-          >
-            {/* Field Markings (SVG layer matching SSL pitch layout) */}
-            <svg
-              viewBox="0 0 900 600"
-              className="absolute inset-0 w-full h-full stroke-[#1E3F30] stroke-[1.8] fill-none pointer-events-none"
-            >
-              {/* Outer boundary */}
-              <rect x="40" y="30" width="820" height="540" />
-              {/* Halfway line */}
-              <line x1="450" y1="30" x2="450" y2="570" />
-              {/* Center circle */}
-              <circle cx="450" cy="300" r="85" />
-              <circle cx="450" cy="300" r="3" fill="#1E3F30" />
-
-              {/* Left Penalty Area */}
-              <rect x="40" y="150" width="140" height="300" />
-              <path d="M 180 230 A 70 70 0 0 1 180 370" />
-              {/* Left Goal Area */}
-              <rect x="15" y="220" width="25" height="160" stroke="#2D3139" />
-
-              {/* Right Penalty Area */}
-              <rect x="720" y="150" width="140" height="300" />
-              <path d="M 720 230 A 70 70 0 0 0 720 370" />
-              {/* Right Goal Area */}
-              <rect x="860" y="220" width="25" height="160" stroke="#2D3139" />
-            </svg>
-
-            {/* BALL (Drag to reposition) */}
+          {/* Pitch: the same field drawing as Simulation / Strategy, scaled to fit width AND height */}
+          <div className="h-[60vh] lg:h-auto lg:flex-1 min-h-0 flex items-center justify-center @container-[size]">
             <div
-              className="absolute pointer-events-none select-none z-30 transition-transform duration-75"
+              ref={fieldRef}
+              onMouseDown={handleFieldMouseDown}
+              onMouseMove={handleFieldMouseMove}
+              className="relative border border-[#2D3139] overflow-hidden cursor-crosshair @container"
               style={{
-                left: `${ballPos.pctX}%`,
-                top: `${ballPos.pctY}%`,
-                transform: 'translate(-50%, -50%)',
+                background: PITCH_SURROUND,
+                aspectRatio: `${FIELD.outerX} / ${FIELD.outerY}`,
+                width: `min(100cqw, ${FIELD.outerX / FIELD.outerY} * 100cqh)`,
               }}
             >
-              <div className="w-5 h-5 rounded-full border-2 border-[#fabc4d] bg-[#111317] flex items-center justify-center shadow-[0_0_12px_#fabc4d]">
-                <div className="w-1.5 h-1.5 bg-white rounded-full" />
+              <svg viewBox={PITCH_VIEWBOX} className="absolute inset-0 w-full h-full pointer-events-none">
+                <PitchLines />
+              </svg>
+
+              {/* BALL (drag to reposition) — to scale */}
+              <div
+                className="absolute pointer-events-none select-none z-30"
+                style={{ left: `${drawX(ballPos.pctX)}%`, top: `${drawY(ballPos.pctY)}%`, transform: 'translate(-50%, -50%)' }}
+              >
+                <div
+                  className="rounded-full bg-white border border-black/60 shadow-[0_0_6px_rgba(255,255,255,0.8)]"
+                  style={{ width: `max(${BALL_W}cqw, 9px)`, height: `max(${BALL_W}cqw, 9px)` }}
+                />
               </div>
-            </div>
 
-            {/* FRIENDLY ROBOTS (Red or Blue) */}
-            {robots.map((bot) => {
-              const isSelected = selectedBotId === bot.id;
-              const isOffline = bot.status === 'OFFLINE';
-              const isOccluded = bot.status === 'OCCLUDED';
-
-              if (isOffline) {
-                // Rendered as dormant in top left bench corner like in Screenshot 2
+              {/* OUR ROBOTS: 8.5 cm squares to scale, turned to their heading (bar = front) */}
+              {robots.map((bot) => {
+                const isSelected = selectedBotId === bot.id;
+                const isOffline = bot.status === 'OFFLINE';
+                const isOccluded = bot.status === 'OCCLUDED';
                 return (
                   <div
                     key={bot.id}
                     onClick={() => setSelectedBotId(bot.id)}
-                    className="absolute z-20 flex flex-col items-center cursor-pointer select-none"
+                    className="absolute z-20 cursor-pointer select-none"
                     style={{
-                      left: `${bot.x}%`,
-                      top: `${bot.y}%`,
-                      transform: 'translate(-50%, -50%)',
+                      left: `${drawX(bot.x)}%`,
+                      top: `${drawY(bot.y)}%`,
+                      width: `${ROBOT_W}%`,
+                      aspectRatio: '1',
+                      transform: `translate(-50%, -50%) ${isSelected ? 'scale(1.2)' : ''}`,
                     }}
                   >
-                    <div className="w-7 h-7 bg-[#282a2e]/60 border border-[#2D3139] text-[#8E95A5] font-bold text-xs flex items-center justify-center">
-                      5
-                    </div>
-                    <span className="text-[10px] font-bold text-[#8E95A5] tracking-wider mt-0.5">
-                      OFF
-                    </span>
-                  </div>
-                );
-              }
-
-              return (
-                <div
-                  key={bot.id}
-                  onClick={() => setSelectedBotId(bot.id)}
-                  className={`absolute z-20 flex flex-col items-center cursor-pointer select-none transition-all duration-100 ${
-                    isSelected ? 'scale-110' : ''
-                  }`}
-                  style={{
-                    left: `${bot.x}%`,
-                    top: `${bot.y}%`,
-                    transform: 'translate(-50%, -50%)',
-                  }}
-                >
-                  <div className="relative">
-                    {/* Bot Body (square) */}
                     <div
-                      className={`relative w-8 h-8 border-2 flex items-center justify-center font-bold text-xs shadow-md ${
-                        selectedTeam === 'RED'
-                          ? 'bg-[#3b2d2d] border-[#ff7a70] text-white'
-                          : 'bg-[#212b3d] border-[#60a5fa] text-white'
-                      }`}
+                      className="relative w-full h-full flex items-center justify-center shadow-md"
                       style={{
-                        boxShadow: testModeActive ? '0 0 10px #ffc665' : undefined,
+                        transform: `rotate(${bot.angle}deg)`,
+                        ...(isOffline
+                          ? { background: '#22252A', border: '2px dashed #8E95A5', opacity: 0.6 }
+                          : { background: TEAM_COLORS.us, border: '2px solid #111317' }),
+                        boxShadow: testModeActive && !isOffline ? '0 0 10px #ffc665' : undefined,
+                        outline: isSelected ? '2px solid #38bdf8' : undefined,
                       }}
                     >
-                      {bot.id}
-
-                      {/* Heading Orientation Notch */}
-                      <div
-                        className="absolute w-2 h-1 bg-white rounded-xs"
-                        style={{
-                          transform: `rotate(${bot.angle}deg) translate(14px)`,
-                        }}
-                      />
+                      {!isOffline && <div className="absolute right-0 top-[12%] h-[76%] w-[18%] bg-[#111317]" />}
+                      <span
+                        className="font-bold text-[9px] leading-none"
+                        style={{ transform: `rotate(${-bot.angle}deg)`, color: isOffline ? '#8E95A5' : '#111317' }}
+                      >
+                        {bot.id}
+                      </span>
                     </div>
 
-                    {/* Red Occluded '?' badge on top right corner (matches Screenshot 2) */}
+                    {/* vision lost: "?" badge */}
                     {isOccluded && (
                       <div
-                        className="absolute -top-1.5 -right-1.5 w-4 h-4 bg-[#e54d42] text-white font-bold text-[9px] rounded-full flex items-center justify-center shadow-xs"
+                        className="absolute -top-2 -right-2 w-3.5 h-3.5 bg-[#fabc4d] text-[#111317] font-bold text-[8px] flex items-center justify-center shadow-xs"
                         title="Vision Occluded / Lost Track"
                       >
                         ?
                       </div>
                     )}
 
-                    {/* Active Diamond badge on BOT 2 */}
-                    {bot.id === 2 && !isOccluded && (
-                      <div className="absolute -top-1 -right-2 text-[10px] text-[#e2e2e8]">
-                        ◆
-                      </div>
-                    )}
+                    <span className="absolute left-1/2 top-full -translate-x-1/2 mt-0.5 text-[9px] font-bold text-white tracking-wider whitespace-nowrap drop-shadow-xs font-mono">
+                      {isOffline ? 'OFF' : bot.label}
+                    </span>
                   </div>
+                );
+              })}
 
-                  {/* Bot Label below */}
-                  <span className="text-[10px] font-bold text-white tracking-wider mt-1 drop-shadow-xs font-mono">
-                    {bot.label}
-                  </span>
+              {/* OPPONENTS: white squares to scale */}
+              {opponents.map((opp) => (
+                <div
+                  key={opp.id}
+                  className="absolute z-10 select-none pointer-events-none"
+                  style={{
+                    left: `${drawX(opp.x)}%`,
+                    top: `${drawY(opp.y)}%`,
+                    width: `${ROBOT_W}%`,
+                    aspectRatio: '1',
+                    transform: 'translate(-50%, -50%)',
+                  }}
+                >
+                  <div
+                    className="w-full h-full flex items-center justify-center text-[8px] font-bold leading-none"
+                    style={{ background: TEAM_COLORS.them, border: '2px solid #111317', color: '#111317' }}
+                  >
+                    {opp.id}
+                  </div>
                 </div>
-              );
-            })}
-
-            {/* OPPONENT ROBOTS B1-B5 (White Diamonds with labels from Screenshot 2) */}
-            {opponents.map((opp) => (
-              <div
-                key={opp.id}
-                className="absolute z-10 flex items-center gap-1 select-none pointer-events-none"
-                style={{
-                  left: `${opp.x}%`,
-                  top: `${opp.y}%`,
-                  transform: 'translate(-50%, -50%)',
-                }}
-              >
-                <div className="w-3 h-3 bg-white border border-[#111317]" />
-                <span className="text-xs font-bold text-white font-mono tracking-wider">
-                  {opp.id}
-                </span>
-              </div>
-            ))}
+              ))}
+            </div>
           </div>
 
           {/* Bottom Telemetry Strip of Field Card matching Screenshot 2 */}
@@ -498,7 +465,7 @@ export const LivePlayView: React.FC<LivePlayViewProps> = ({
         </div>
 
         {/* RIGHT PANE: MATCH CONTROLS (3 or 4 columns) */}
-        <div className="lg:col-span-4 xl:col-span-3 bg-[#181A1E] flex flex-col p-4 overflow-y-auto">
+        <div className="lg:col-span-4 xl:col-span-3 min-h-0 bg-[#181A1E] flex flex-col p-4 overflow-y-auto">
           {/* Header */}
           <div className="pb-3 border-b border-[#2D3139]">
             <span className="text-xs font-bold uppercase tracking-wider text-white">

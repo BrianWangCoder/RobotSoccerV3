@@ -58,7 +58,12 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen w-full flex flex-col bg-[#0F1115] text-[#e2e2e8] font-['Space_Mono',monospace]">
+    <div
+      className={`min-h-screen w-full flex flex-col bg-[#0F1115] text-[#e2e2e8] font-['Space_Mono',monospace] ${
+        // Simulation and Play fit the window exactly on desktop (no page scroll)
+        currentScreen === 'simulation' || currentScreen === 'play' ? 'lg:h-dvh lg:min-h-0' : ''
+      }`}
+    >
       {/* Top Header Bar */}
       <Header
         currentScreen={currentScreen}
@@ -69,7 +74,7 @@ export default function App() {
       />
 
       {/* Main Screen Views */}
-      <main className="flex-1 flex flex-col w-full overflow-hidden">
+      <main className="flex-1 min-h-0 flex flex-col w-full overflow-hidden">
         {currentScreen === 'home' && (
           <HomeView onNavigate={setCurrentScreen} />
         )}

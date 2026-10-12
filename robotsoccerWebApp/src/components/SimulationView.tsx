@@ -246,7 +246,7 @@ export const SimulationView: React.FC<SimulationViewProps> = ({ strategy, onEdit
   ).padStart(2, '0')}`;
 
   return (
-    <div className="flex-1 flex flex-col w-full bg-[#0F1115] text-[#e2e2e8] overflow-hidden select-none">
+    <div className="flex-1 min-h-0 flex flex-col w-full bg-[#0F1115] text-[#e2e2e8] overflow-hidden select-none">
       {/* Top control bar */}
       <div className="min-h-12 border-b border-[#2D3139] bg-[#181A1E] px-4 md:px-6 py-1.5 flex flex-wrap items-center justify-between gap-2 shrink-0">
         <div className="flex items-center gap-2">
@@ -315,9 +315,9 @@ export const SimulationView: React.FC<SimulationViewProps> = ({ strategy, onEdit
         </div>
       </div>
 
-      <div className="flex-1 grid grid-cols-1 lg:grid-cols-12 gap-0 overflow-hidden">
+      <div className="flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-12 lg:grid-rows-1 gap-0 overflow-hidden">
         {/* FIELD */}
-        <div className="lg:col-span-8 xl:col-span-9 border-r border-[#2D3139] bg-[#111317] flex flex-col p-4 overflow-hidden">
+        <div className="lg:col-span-8 xl:col-span-9 min-h-0 border-r border-[#2D3139] bg-[#111317] flex flex-col p-4 overflow-hidden">
           <div className="flex flex-wrap items-center justify-between gap-2 pb-2 mb-2 border-b border-[#2D3139]/50">
             <div className="flex items-center gap-3">
               <span className="text-xs font-bold uppercase tracking-wider text-[#fabc4d]">
@@ -361,16 +361,19 @@ export const SimulationView: React.FC<SimulationViewProps> = ({ strategy, onEdit
             </div>
           </div>
 
-          {/* Pitch */}
-          <div className="flex-1 flex items-center justify-center min-h-0">
+          {/* Pitch: scales to the largest size that fits BOTH the width and height available */}
+          <div className="h-[60vh] lg:h-auto lg:flex-1 min-h-0 flex items-center justify-center @container-[size]">
             <div
               ref={fieldRef}
               onPointerDown={onFieldDown}
               onPointerMove={onFieldMove}
               onPointerUp={onFieldUp}
               onPointerCancel={onFieldUp}
-              className="relative w-full max-h-full bg-[#1a1c1f] border border-[#2D3139] overflow-hidden cursor-crosshair touch-none @container"
-              style={{ aspectRatio: `${FIELD.outerX} / ${FIELD.outerY}` }}
+              className="relative bg-[#1a1c1f] border border-[#2D3139] overflow-hidden cursor-crosshair touch-none @container"
+              style={{
+                aspectRatio: `${FIELD.outerX} / ${FIELD.outerY}`,
+                width: `min(100cqw, ${FIELD.outerX / FIELD.outerY} * 100cqh)`,
+              }}
             >
               <svg
                 viewBox={PITCH_VIEWBOX}
@@ -523,7 +526,7 @@ export const SimulationView: React.FC<SimulationViewProps> = ({ strategy, onEdit
         </div>
 
         {/* INSPECTOR */}
-        <div className="lg:col-span-4 xl:col-span-3 bg-[#181A1E] flex flex-col p-4 overflow-y-auto">
+        <div className="lg:col-span-4 xl:col-span-3 min-h-0 bg-[#181A1E] flex flex-col p-4 overflow-y-auto">
           <div className="pb-3 border-b border-[#2D3139]">
             <div className="flex items-center justify-between">
               <span className="text-xs font-bold uppercase tracking-wider text-white">
