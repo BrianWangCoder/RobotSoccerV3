@@ -13,7 +13,6 @@ import {
   Flame,
   X,
   Plus,
-  Info,
   ChevronDown,
   Layers,
   Bot,
@@ -95,9 +94,9 @@ const BLOCK_DEFS: Record<BlockType, BlockDef> = {
     category: 'motion',
     icon: Navigation,
     iconClass: 'rotate-45',
-    bg: 'bg-[#2563eb]',
-    hover: 'hover:bg-[#1d4ed8]',
-    input: 'bg-[#1e40af]',
+    bg: 'bg-[#3d64b0]',
+    hover: 'hover:bg-[#35579a]',
+    input: 'bg-[#2d4a85]',
     fields: [
       { key: 'start', label: 'Start', width: 'w-16', def: '[0, 0]' },
       { key: 'stop', label: 'Stop', width: 'w-20', def: '[120, -50]' },
@@ -108,9 +107,9 @@ const BLOCK_DEFS: Record<BlockType, BlockDef> = {
     label: 'Turn',
     category: 'motion',
     icon: RotateCw,
-    bg: 'bg-[#2563eb]',
-    hover: 'hover:bg-[#1d4ed8]',
-    input: 'bg-[#1e40af]',
+    bg: 'bg-[#3d64b0]',
+    hover: 'hover:bg-[#35579a]',
+    input: 'bg-[#2d4a85]',
     fields: [
       { key: 'speed', label: 'Speed', width: 'w-16', def: '60°/s' },
       { key: 'angle', label: 'Angle', width: 'w-16', def: '180°' },
@@ -120,46 +119,44 @@ const BLOCK_DEFS: Record<BlockType, BlockDef> = {
     label: 'Spin',
     category: 'motion',
     icon: RefreshCw,
-    bg: 'bg-[#2563eb]',
-    hover: 'hover:bg-[#1d4ed8]',
-    input: 'bg-[#1e40af]',
+    bg: 'bg-[#3d64b0]',
+    hover: 'hover:bg-[#35579a]',
+    input: 'bg-[#2d4a85]',
     fields: [{ key: 'rpm', label: 'Speed [rpm]', width: 'w-16', def: '450' }],
   },
   defender: {
     label: 'Defender',
     category: 'tactical',
     icon: Shield,
-    bg: 'bg-[#16a34a]',
-    hover: 'hover:bg-[#15803d]',
-    input: 'bg-[#15803d]',
+    bg: 'bg-[#3f8f5c]',
+    hover: 'hover:bg-[#357a4e]',
+    input: 'bg-[#357a4e]',
     fields: [
       { key: 'left', label: 'Left', width: 'w-20', def: '[-250, 120]', alias: 'start' },
       { key: 'right', label: 'Right', width: 'w-20', def: '[-250, -120]', alias: 'stop' },
       { key: 'kickout', label: 'Kick-out', width: 'w-10', def: '60', kind: 'stepper', step: 10, min: 0, max: 300, unit: 'cm' },
-      { key: 'runup', label: 'Run-up', width: 'w-10', def: '25', kind: 'stepper', step: 5, min: 5, max: 150, unit: 'cm' },
     ],
   },
   goalkeeper: {
     label: 'GoalKeeper',
     category: 'tactical',
     icon: Activity,
-    bg: 'bg-[#16a34a]',
-    hover: 'hover:bg-[#15803d]',
-    input: 'bg-[#15803d]',
+    bg: 'bg-[#3f8f5c]',
+    hover: 'hover:bg-[#357a4e]',
+    input: 'bg-[#357a4e]',
     fields: [
       { key: 'left', label: 'Left', width: 'w-20', def: '[Post L]', alias: 'start' },
       { key: 'right', label: 'Right', width: 'w-20', def: '[Post R]', alias: 'stop' },
       { key: 'kickout', label: 'Kick-out', width: 'w-10', def: '40', kind: 'stepper', step: 10, min: 0, max: 300, unit: 'cm' },
-      { key: 'runup', label: 'Run-up', width: 'w-10', def: '20', kind: 'stepper', step: 5, min: 5, max: 150, unit: 'cm' },
     ],
   },
   kickA: {
     label: 'KickA',
     category: 'kick',
     icon: Zap,
-    bg: 'bg-[#ea580c]',
-    hover: 'hover:bg-[#c2410c]',
-    input: 'bg-[#c2410c]',
+    bg: 'bg-[#c46a35]',
+    hover: 'hover:bg-[#a95b2e]',
+    input: 'bg-[#a95b2e]',
     fields: [
       { key: 'threshold', label: 'Align', width: 'w-12', def: '0.85' },
       { key: 'speed', label: 'Speed', width: 'w-14', def: '95%' },
@@ -170,9 +167,9 @@ const BLOCK_DEFS: Record<BlockType, BlockDef> = {
     label: 'KickB',
     category: 'kick',
     icon: Flame,
-    bg: 'bg-[#ea580c]',
-    hover: 'hover:bg-[#c2410c]',
-    input: 'bg-[#c2410c]',
+    bg: 'bg-[#c46a35]',
+    hover: 'hover:bg-[#a95b2e]',
+    input: 'bg-[#a95b2e]',
     fields: [
       { key: 'threshold', label: 'Align', width: 'w-12', def: '0.65' },
       { key: 'speed', label: 'Speed', width: 'w-14', def: '75%' },
@@ -434,7 +431,7 @@ const HatView: React.FC<HatViewProps> = ({
 }) => (
   <div
     onPointerDown={onPointerDown}
-    className={`relative bg-[#d97706] hover:bg-[#b45309] text-white px-3.5 py-2.5 flex items-center justify-between shadow-md ${
+    className={`relative bg-[#c08533] hover:bg-[#a5722c] text-white px-3.5 py-2.5 flex items-center justify-between shadow-md ${
       ghost ? '' : 'cursor-grab active:cursor-grabbing touch-none'
     } ${selected ? 'ring-2 ring-[#38bdf8] ring-offset-1 ring-offset-[#0F1115]' : ''}`}
   >
@@ -1397,7 +1394,6 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
   };
 
   const activeRoutines = strategy.routines.filter((r) => r.situationId === activeSituation.id);
-  const totalBlocks = activeRoutines.reduce((acc, r) => acc + r.blocks.length, 0);
 
   /* ---------------- render helpers ---------------- */
 
@@ -1423,7 +1419,7 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
   const routinePlaceholder = (
     <div
       key="__routine_placeholder"
-      className="h-12 mb-5 bg-[#d97706]/15 border border-dashed border-[#fabc4d]/60"
+      className="h-12 mb-5 w-72 max-w-full bg-[#c08533]/15 border border-dashed border-[#fabc4d]/60"
     />
   );
 
@@ -1464,7 +1460,7 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
         className="pb-5"
       >
         <div
-          className={`flex flex-col transition-all duration-150 ${
+          className={`w-fit max-w-full flex flex-col transition-all duration-150 ${
             isSelectedRobot ? 'ring-1 ring-[#fabc4d]/40' : ''
           }`}
         >
@@ -1565,7 +1561,6 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
             left: parsePoint(val('left')) ?? (isGK ? NAMED_SPOTS['post l'] : [-2500, -1200]),
             right: parsePoint(val('right')) ?? (isGK ? NAMED_SPOTS['post r'] : [-2500, 1200]),
             kickoutCm: parseNum(val('kickout'), isGK ? 40 : 60),
-            runupCm: parseNum(val('runup'), isGK ? 20 : 25),
           };
         })()
       : null;
@@ -1625,11 +1620,6 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
     if (!rangeEdit) return;
     const next = Math.max(0, Math.min(300, rangeEdit.kickoutCm + dir * 10));
     handleUpdateParam(rangeEdit.routine.id, rangeEdit.block.id, 'kickout', String(next));
-  };
-  const bumpRunup = (dir: number) => {
-    if (!rangeEdit) return;
-    const next = Math.max(5, Math.min(150, rangeEdit.runupCm + dir * 5));
-    handleUpdateParam(rangeEdit.routine.id, rangeEdit.block.id, 'runup', String(next));
   };
 
   // mm → % of the field-lines frame
@@ -2025,7 +2015,6 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
                   {(
                     [
                       ['Kick-out', rangeEdit.kickoutCm, bumpKickout, 10],
-                      ['Run-up', rangeEdit.runupCm, bumpRunup, 5],
                     ] as const
                   ).map(([name, value, bump, stepCm]) => (
                     <span key={name} className="flex items-center gap-1">
@@ -2268,25 +2257,9 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
               </div>
             </div>
           </div>
-
-          <div className="mt-auto pt-4">
-            <div className="p-3 bg-[#1e2024] border border-[#2D3139] flex items-start gap-2 text-[11px] text-[#8E95A5] leading-relaxed">
-              <Info className="w-4 h-4 text-[#fabc4d] shrink-0 mt-0.5" />
-              <span>
-                <strong className="text-white">How to use:</strong> Drag to sketch{' '}
-                <span className="font-bold" style={{ color: activeColor }}>
-                  {activeSituation.name}
-                </span>
-                , or click dots to place corners and click the first one again to close. You can
-                mix both in one shape. Shift = add, Alt = erase, Ctrl-click = toggle one dot,
-                Backspace = undo point, Esc = cancel. Drag blocks from the palette into a robot stack, drag
-                them around to reorder, and drop them back on the palette to delete.
-              </span>
-            </div>
-          </div>
         </div>
 
-        {/* COLUMN 2: SCRIPT WORKSPACE */}
+        {/* COLUMN 2: WORKSPACE */}
         <div
           ref={workspaceRef}
           className="lg:col-span-5 border-r border-[#2D3139] bg-[#0F1115] flex flex-col p-4 overflow-y-auto"
@@ -2295,7 +2268,7 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
             <div className="flex items-center gap-2">
               <Layers className="w-4 h-4 text-[#fabc4d]" />
               <span className="text-xs font-bold uppercase tracking-wider text-white">
-                SCRIPT WORKSPACE
+                WORKSPACE
               </span>
             </div>
             <button
@@ -2310,17 +2283,11 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
           <div className="flex items-center justify-between py-2.5 text-xs border-b border-[#2D3139]/50">
             <div className="flex items-center gap-2">
               <span className="text-[#8E95A5] font-bold uppercase tracking-wider text-[11px]">
-                ACTIVE CONTEXT:
+                ACTIVE ZONE:
               </span>
               <div className="px-2 py-0.5 bg-[#22252A] border border-[#fabc4d]/60 text-[#fabc4d] font-bold text-xs">
                 {activeSituation.name}
               </div>
-            </div>
-            <div className="text-[11px] font-mono text-[#8E95A5]">
-              ACTIVE ROBOTS:{' '}
-              <span className="text-white font-bold">
-                {activeRoutines.length} CONFIGURED ({totalBlocks} BLOCKS)
-              </span>
             </div>
           </div>
 
@@ -2374,24 +2341,11 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
                 BLOCKS PALETTE
               </span>
             </div>
-            <span className="text-[10px] font-bold tracking-widest text-[#8E95A5] uppercase font-mono">
-              SCRATCH STYLE
-            </span>
           </div>
 
           <div className="mt-4 space-y-6">
             {/* ROBOT START BLOCKS (HAT) */}
             <div>
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-bold text-[#fabc4d] uppercase tracking-wider">
-                  ● ROBOT START BLOCKS
-                </span>
-                <span className="text-[10px] text-[#8E95A5] font-mono">HAT</span>
-              </div>
-              <p className="text-[10px] text-[#8E95A5] mt-0.5 mb-2 leading-tight">
-                Drag onto the canvas (or click) to start a robot routine:
-              </p>
-
               <div className="grid grid-cols-2 gap-2">
                 {[1, 2, 3, 4, 5].map((id) => (
                   <div
@@ -2404,7 +2358,7 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
                     }}
                     className={`${
                       id === 5 ? 'col-span-2 px-3' : 'px-2.5'
-                    } flex items-center justify-between py-1.5 bg-[#d97706] hover:bg-[#b45309] text-white text-xs font-bold tracking-wide transition-colors cursor-grab active:cursor-grabbing touch-none`}
+                    } flex items-center justify-between py-1.5 bg-[#c08533] hover:bg-[#a5722c] text-white text-xs font-bold tracking-wide transition-colors cursor-grab active:cursor-grabbing touch-none`}
                   >
                     <div className="flex items-center gap-1.5">
                       <Bot className="w-3.5 h-3.5" />

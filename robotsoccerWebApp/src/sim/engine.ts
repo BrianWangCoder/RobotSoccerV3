@@ -39,9 +39,11 @@ export const FIELD = {
  */
 export const PHYSICS = {
   robotMass: 0.8, // kg
-  robotMaxSpeed: 1500, // mm/s at 100 %
-  robotAccel: 2500, // mm/s²
-  robotTurnRate: 360, // deg/s
+  robotMaxSpeed: 1500, // mm/s at 100 % (top speed of each wheel)
+  robotAccel: 2500, // mm/s² (how fast each wheel can change speed)
+  robotTurnRate: 360, // deg/s — fastest spin on the spot
+  wheelBase: 140, // mm between the two drive wheels
+  sideGrip: 8000, // mm/s² — how quickly the tyres kill sideways sliding after a bump
 
   ballMass: 0.0459, // kg
   ballRadius: 21.35, // mm
@@ -59,6 +61,7 @@ export const BALL_R = PHYSICS.ballRadius;
 const MAX_SPEED = PHYSICS.robotMaxSpeed;
 const MAX_ACCEL = PHYSICS.robotAccel;
 const MAX_TURN = PHYSICS.robotTurnRate;
+const WHEEL_BASE = PHYSICS.wheelBase;
 const CONTACT = ROBOT_R + BALL_R;
 
 const OWN_GOAL: [number, number] = [-FIELD.halfX - 300, 0];
@@ -137,6 +140,9 @@ export interface SimRobot {
   vx: number;
   vy: number;
   angle: number; // degrees, 0 = +x
+  /** Left / right wheel speeds (mm/s, + = forward). Two DC motors are the ONLY way it moves. */
+  wl: number;
+  wr: number;
   home: [number, number, number];
 }
 
@@ -145,6 +151,7 @@ export interface ExecState {
   blockIdx: number;
   phase: number;
   t: number; // seconds spent in current block
+  since: number; // world time the current phase started
   turnTarget: number | null;
   status: string;
   target: [number, number] | null;
@@ -170,7 +177,17 @@ interface Command {
   face: number | null; // desired heading (deg)
   spin: number; // deg/s (overrides face when non-zero)
   /** A strike is armed: the robot is deliberately driving through the ball along (dx, dy). */
-  kick: { dx: number; dy: number; minAlign: number } | null;
+  kick: { dx: number; dy: number; minAlign: number; minSpeed?: number } | null;
+  /**
+   * Rail mode: keep the body pointed along this heading (either way round) and reach the target
+   * by driving straight forwards / backwards along it — no turning to shuffle sideways.
+   */
+  axis?: number | null;
+  /**
+   * Hard range limit: the robot's centre must stay within `max` mm of segment a–b. Speed
+   * outwards is capped so it can always brake before the edge (moving inwards is never limited).
+   */
+  fence?: { a: [number, number]; b: [number, number]; max: number };
 }
 
 /** Kick-off spots (x, y, heading) for robots 1..5. */
@@ -193,6 +210,7 @@ const freshExec = (): ExecState => ({
   blockIdx: 0,
   phase: 0,
   t: 0,
+  since: 0,
   turnTarget: null,
   status: 'idle',
   target: null,
@@ -208,6 +226,8 @@ export const createWorld = (): SimWorld => {
     vx: 0,
     vy: 0,
     angle: h[2],
+    wl: 0,
+    wr: 0,
     home: h,
   }));
   const opponents = OPP_HOME.map((h, i) => ({
@@ -219,6 +239,8 @@ export const createWorld = (): SimWorld => {
     vx: 0,
     vy: 0,
     angle: h[2],
+    wl: 0,
+    wr: 0,
     home: h,
   }));
   const exec: Record<number, ExecState> = {};
@@ -245,6 +267,8 @@ export const resetPositions = (w: SimWorld, ball: [number, number] = [0, 0]) => 
     r.angle = r.home[2];
     r.vx = 0;
     r.vy = 0;
+    r.wl = 0;
+    r.wr = 0;
   });
   w.ball = { x: ball[0], y: ball[1], vx: 0, vy: 0 };
   Object.keys(w.exec).forEach((k) => (w.exec[+k] = freshExec()));
@@ -434,7 +458,8 @@ const planKick = (
 
   const settled = hyp(bot.x - behind[0], bot.y - behind[1]) < 70 && hyp(bot.vx, bot.vy) < 250;
   const ballStill = !requireStill || hyp(b.vx, b.vy) < 300;
-  const facing = Math.abs(angleDiff(bot.angle, face)) < 15;
+  // Square on AND no longer rotating (a two-wheel robot can't correct much once it charges)
+  const facing = Math.abs(angleDiff(bot.angle, face)) < 8 && Math.abs(bot.wr - bot.wl) < 40;
   if (settled && align >= minAlign && ballStill && facing) {
     st.phase = 2;
   }
@@ -508,12 +533,26 @@ const runBlock = (
         parsePoint(p.right ?? p.stop) ?? (isGK ? NAMED_SPOTS['post r'] : DEFENDER_RIGHT);
       const kickout = clamp(parseNum(p.kickout, isGK ? 40 : 60), 0, 400) * 10; // cm → mm
       const ballToLine = distToSegment(ball.x, ball.y, a, b);
+      // Everything this block does stays inside its range (kick-out distance around the line)
+      const out = (cmd: Command, done = false): BlockResult => ({
+        cmd: { ...cmd, fence: { a, b, max: kickout } },
+        done,
+      });
+
+      // Phases: 0 guarding · 1 just hit (set by step) · 2 planKick strike (ball-behind fallback)
+      //         10 squaring up to the ball · 11 charging it · 12 returning to post
+      const setPhase = (ph: number) => {
+        st.phase = ph;
+        st.since = w.time;
+      };
+      const offLine = distToSegment(bot.x, bot.y, a, b);
 
       if (st.phase === 1) {
-        // just cleared the ball
-        if (!isLast) return { cmd: hold(bot), done: true }; // hand over to the next block
-        st.phase = 0;
+        // just cleared the ball: one hit, then straight back to post
+        if (!isLast) return out(hold(bot), true); // hand over to the next block
+        setPhase(12);
       }
+      if (st.phase === 12 && offLine < 120 && w.time - st.since > 0.3) st.phase = 0;
 
       // A fast ball heading for our goal gets BLOCKED first (stay on the line); once it's
       // slowed or bounced off, step out and clear it.
@@ -521,33 +560,84 @@ const runBlock = (
       const gdy = OWN_GOAL[1] - ball.y;
       const towardGoal = (ball.vx * gdx + ball.vy * gdy) / (hyp(gdx, gdy) || 1);
       const incoming = towardGoal > 500;
+      const engaged = st.phase === 2 || st.phase === 10 || st.phase === 11;
       const clearing =
-        kickout > 0 && !incoming && ballToLine <= kickout + (st.phase === 2 ? 250 : 0);
+        kickout > 0 &&
+        !incoming &&
+        st.phase !== 12 &&
+        ballToLine <= kickout + (engaged ? 120 : 0);
       if (clearing) {
         const gx = ball.x - OWN_GOAL[0];
         const gy = ball.y - OWN_GOAL[1];
         const gl = hyp(gx, gy) || 1;
-        const aim: [number, number] = [ball.x + (gx / gl) * 2500, ball.y + (gy / gl) * 2500];
-        return {
-          cmd: planKick(
-            w,
-            bot,
-            aim,
-            0.85,
-            0.5,
-            st,
-            `${label} clearing`,
-            false,
-            p.runup !== undefined ? parseNum(p.runup, 25) * 10 : undefined
-          ),
-          done: false,
-        };
+        // No run-up: square up to the ball on the spot, then drive straight through it.
+        // From the goal side that knocks it away from goal — only if the ball has slipped
+        // behind us do we have to go round it first (else we'd push it into our own net).
+        const toBall = distBall || 1;
+        const bx = (ball.x - bot.x) / toBall;
+        const by = (ball.y - bot.y) / toBall;
+        const awayFromGoal = (bx * gx + by * gy) / gl;
+        if (awayFromGoal > 0.2 || st.phase === 11) {
+          if (st.phase !== 11) {
+            if (st.phase !== 10) setPhase(10);
+            const squared =
+              Math.abs(angleDiff(bot.angle, faceBall)) < 10 && Math.abs(bot.wr - bot.wl) < 120;
+            const gap = distBall - CONTACT;
+            if (squared && gap < 50) {
+              // Ball is touching us: with no room to pick up speed we'd only push it along.
+              // Reverse a few cm so the next move is a proper hit.
+              st.status = `${label}: making room to hit`;
+              return out({
+                tx: bot.x - bx * (80 - gap),
+                ty: bot.y - by * (80 - gap),
+                speed: 0.6,
+                face: faceBall,
+                spin: 0,
+                kick: null,
+              });
+            }
+            if (squared) setPhase(11);
+            else {
+              st.status = `${label}: turning to the ball`;
+              return out({ ...hold(bot), face: faceBall });
+            }
+          }
+          if (w.time - st.since < 2) {
+            st.status = `${label}: clearing — hitting the ball`;
+            return out({
+              tx: ball.x + bx * 300, // just past the ball: full speed at contact, then brake
+              ty: ball.y + by * 300,
+              speed: 1,
+              face: faceBall,
+              spin: 0,
+              // Any contact counts as the hit — then we go back, we don't dribble it away
+              kick: { dx: bx, dy: by, minAlign: 0.3, minSpeed: 30 },
+            });
+          }
+          setPhase(12); // charge took too long → give up and go back
+        } else {
+          const aim: [number, number] = [ball.x + (gx / gl) * 2500, ball.y + (gy / gl) * 2500];
+          return out(planKick(w, bot, aim, 1, 0.5, st, `${label}: getting goal-side`, false, 30));
+        }
       }
-      if (st.phase === 2) st.phase = 0; // ball escaped the band before we hit it
+      // Ball escaped the band / we strayed too far → head back to the post
+      if (engaged) setPhase(offLine > 120 ? 12 : 0);
 
       const [tx, ty] = shadowOnSegment(a, b, ball, OWN_GOAL);
-      st.status = `${label}: guarding · ball ${Math.round(ballToLine / 10)} cm from line`;
-      return { cmd: { tx, ty, speed: 1, face: faceBall, spin: 0, kick: null }, done: false };
+      st.status =
+        st.phase === 12
+          ? `${label}: returning to post`
+          : `${label}: guarding · ball ${Math.round(ballToLine / 10)} cm from line`;
+      // Two-wheel robot: park ALONG the guard line and shuttle forwards/backwards on it, rather
+      // than facing the ball and having to turn every time the shadow point slides sideways.
+      const lineHeading = (Math.atan2(b[1] - a[1], b[0] - a[0]) * 180) / Math.PI;
+      if (offLine > (st.phase === 12 ? 60 : 200)) {
+        // Not on the line yet: drive onto it, then square up along it
+        const along =
+          Math.abs(angleDiff(bot.angle, lineHeading)) <= 90 ? lineHeading : lineHeading + 180;
+        return out({ tx, ty, speed: 1, face: along, spin: 0, kick: null });
+      }
+      return out({ tx, ty, speed: 1, face: null, spin: 0, kick: null, axis: lineHeading });
     }
 
     case 'kickA':
@@ -642,33 +732,140 @@ const opponentCommand = (w: SimWorld, o: SimRobot): Command => {
 /* Physics                                                             */
 /* ------------------------------------------------------------------ */
 
+/**
+ * Differential drive: the robot has two DC motors (left / right wheel) and NO sideways motion.
+ * It can only roll along its heading; it steers by running the wheels at different speeds
+ * (arcs), turns on the spot with the wheels opposed, and pivots with one wheel stopped.
+ *
+ * Go-to-point controller:
+ *  - target well off to the side → turn on the spot towards it
+ *  - otherwise drive forward and arc onto the line (inner wheel slower), slowing for big errors
+ *  - target close BEHIND → reverse onto it instead of doing a U-turn (not while striking)
+ *  - arrived → turn on the spot to the requested facing
+ */
+const ARRIVE = 25; // mm
+const SPIN_IN_PLACE = 60; // deg heading error above which the robot stops and turns first
+
 const drive = (r: SimRobot, c: Command, dt: number) => {
+  const rad = (r.angle * Math.PI) / 180;
+  const hx = Math.cos(rad);
+  const hy = Math.sin(rad);
+  const toRad = Math.PI / 180;
+  const maxOmega = MAX_TURN * toRad; // rad/s
+  const vmax = MAX_SPEED * c.speed;
+
+  let v = 0; // desired forward speed, mm/s (negative = reversing)
+  let omega = 0; // desired yaw rate, rad/s (+ = counter-clockwise, towards +angle)
+
+  // Yaw rate that can still be braked to zero by the heading error (motors can't stop instantly),
+  // so the robot settles on a heading instead of overshooting it
+  const maxYawAccel = (2 * MAX_ACCEL) / WHEEL_BASE; // rad/s²
+  const steer = (errDeg: number, gain: number) => {
+    const e = errDeg * toRad;
+    const cap = Math.min(maxOmega, Math.sqrt(2 * maxYawAccel * 0.85 * Math.abs(e)));
+    return clamp(e * gain, -cap, cap);
+  };
+
   const dx = c.tx - r.x;
   const dy = c.ty - r.y;
   const d = hyp(dx, dy);
-  const vmax = MAX_SPEED * c.speed;
-  const want = d > 3 ? Math.min(vmax, Math.sqrt(2 * MAX_ACCEL * d) * 0.9) : 0;
-  const wx = d > 3 ? (dx / d) * want : 0;
-  const wy = d > 3 ? (dy / d) * want : 0;
-  const ex = wx - r.vx;
-  const ey = wy - r.vy;
-  const el = hyp(ex, ey);
-  const maxDv = MAX_ACCEL * dt;
-  if (el > maxDv) {
-    r.vx += (ex / el) * maxDv;
-    r.vy += (ey / el) * maxDv;
-  } else {
-    r.vx = wx;
-    r.vy = wy;
+
+  if (c.spin) {
+    omega = clamp(c.spin * toRad, -maxOmega, maxOmega);
+  } else if (c.axis != null) {
+    // Rail mode: hold the axis heading (whichever way round is closer) and drive along it
+    const h = Math.abs(angleDiff(r.angle, c.axis)) <= 90 ? c.axis : c.axis + 180;
+    const hr = h * toRad;
+    const along = dx * Math.cos(hr) + dy * Math.sin(hr); // + = ahead of us on the rail
+    const lateral = -dx * Math.sin(hr) + dy * Math.cos(hr); // + = to our left
+    const RAIL_DEADBAND = 40; // mm — ignore tiny shadow-point jitter instead of twitching
+    if (Math.abs(along) > RAIL_DEADBAND) {
+      v = Math.sign(along) * Math.min(vmax, Math.sqrt(2 * MAX_ACCEL * Math.abs(along)) * 0.9);
+    }
+    // Gentle heading nudge to soak up any drift off the rail (flipped when reversing)
+    const drift = v ? (Math.atan2(lateral, 400) * 180) / Math.PI * Math.sign(v) : 0;
+    omega = steer(angleDiff(r.angle, h) + clamp(drift, -20, 20), 5);
+  } else if (d > ARRIVE) {
+    const bearing = (Math.atan2(dy, dx) * 180) / Math.PI;
+    let err = angleDiff(r.angle, bearing);
+    // Short hop to a point behind us: back onto it rather than turning round
+    const reverse = !c.kick && Math.abs(err) > 110 && d < 500;
+    if (reverse) err = angleDiff(r.angle, bearing + 180);
+    const brake = Math.min(vmax, Math.sqrt(2 * MAX_ACCEL * d) * 0.9);
+    if (Math.abs(err) > SPIN_IN_PLACE) {
+      omega = steer(err, 8); // turn on the spot first
+    } else {
+      v = brake * Math.cos(err * toRad) * (reverse ? -1 : 1);
+      omega = steer(err, 5); // arc onto the line
+    }
+  } else if (c.face !== null) {
+    omega = steer(angleDiff(r.angle, c.face), 8);
   }
+
+  if (c.fence) {
+    const { a, b, max } = c.fence;
+    const sx = b[0] - a[0];
+    const sy = b[1] - a[1];
+    const t = clamp(((r.x - a[0]) * sx + (r.y - a[1]) * sy) / (sx * sx + sy * sy || 1), 0, 1);
+    const ox = r.x - (a[0] + t * sx);
+    const oy = r.y - (a[1] + t * sy);
+    const od = hyp(ox, oy);
+    if (od > 1) {
+      const room = Math.max(0, max - od);
+      // Braking happens along the heading, so stopping distance OUTWARDS is the straight-line
+      // stopping distance × how much the heading points out (+ margin in case it swings further)
+      const brake = 2 * MAX_ACCEL * 0.7;
+      const outShare = (hx * ox + hy * oy) / od;
+      const reach = (share: number) => Math.min(1, share + 0.25);
+      const cur = (r.wl + r.wr) / 2;
+      const curOut = Math.sign(cur) * outShare;
+      if (curOut > 0 && ((cur * cur) / brake) * reach(curOut) >= room) {
+        // About to run out of room → brake hard on BOTH wheels, no turning until stopped
+        v = 0;
+        omega = 0;
+      } else {
+        const out = Math.sign(v) * outShare;
+        if (out > 0) {
+          const cap = Math.sqrt((brake * room) / reach(out));
+          if (Math.abs(v) > cap) v = Math.sign(v) * cap;
+        }
+      }
+    }
+  }
+
+  // Body speeds → wheel speeds. If a wheel would exceed its top speed, scale BOTH down so the
+  // arc stays the same shape (that's what a real speed-limited motor pair does).
+  let tl = v - (omega * WHEEL_BASE) / 2;
+  let tr = v + (omega * WHEEL_BASE) / 2;
+  const over = Math.max(Math.abs(tl), Math.abs(tr)) / MAX_SPEED;
+  if (over > 1) {
+    tl /= over;
+    tr /= over;
+  }
+
+  // Each motor can only change speed so fast. Both wheels are ramped together (same fraction of
+  // the way to their targets) so braking stays straight instead of slewing the robot round.
+  const dv = MAX_ACCEL * dt;
+  const ramp = Math.min(1, dv / Math.max(Math.abs(tl - r.wl), Math.abs(tr - r.wr), 1e-9));
+  r.wl += (tl - r.wl) * ramp;
+  r.wr += (tr - r.wr) * ramp;
+
+  const fwd = (r.wl + r.wr) / 2;
+  const yaw = (r.wr - r.wl) / WHEEL_BASE; // rad/s
+
+  // Sideways velocity only exists from bumps/collisions, and the tyres scrub it off quickly
+  const side = -r.vx * hy + r.vy * hx;
+  const sideLeft = Math.sign(side) * Math.max(0, Math.abs(side) - PHYSICS.sideGrip * dt);
+
+  r.angle += (yaw / toRad) * dt;
+  const nrad = (r.angle * Math.PI) / 180;
+  const nhx = Math.cos(nrad);
+  const nhy = Math.sin(nrad);
+  r.vx = nhx * fwd - nhy * sideLeft;
+  r.vy = nhy * fwd + nhx * sideLeft;
+
   r.x = clamp(r.x + r.vx * dt, -FIELD.outerX + ROBOT_R, FIELD.outerX - ROBOT_R);
   r.y = clamp(r.y + r.vy * dt, -FIELD.outerY + ROBOT_R, FIELD.outerY - ROBOT_R);
-
-  if (c.spin) r.angle += c.spin * dt;
-  else if (c.face !== null) {
-    const diff = angleDiff(r.angle, c.face);
-    r.angle += clamp(diff, -MAX_TURN * dt, MAX_TURN * dt);
-  }
 };
 
 /**
@@ -705,7 +902,7 @@ const ballContact = (w: SimWorld, r: SimRobot, kick: Command['kick']): boolean =
 
   if (!kick) return false;
   const align = nx * kick.dx + ny * kick.dy;
-  return align >= kick.minAlign && vRel > 150; // a real hit, not a gentle nudge
+  return align >= kick.minAlign && vRel > (kick.minSpeed ?? 150); // a real hit, not a gentle nudge
 };
 
 const separateRobots = (all: SimRobot[]) => {

@@ -169,7 +169,7 @@ export const LivePlayView: React.FC<LivePlayViewProps> = ({
     addLog('[DIAGNOSTICS] Motor pulse sequence test initiated on active bots.');
     setTimeout(() => {
       setTestModeActive(false);
-      addLog('[DIAGNOSTICS] Actuator pulse test complete. All omni-wheels nominal.');
+      addLog('[DIAGNOSTICS] Actuator pulse test complete. Both drive motors nominal.');
     }, 1500);
   };
 
