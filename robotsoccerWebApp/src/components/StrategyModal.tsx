@@ -9,6 +9,8 @@ interface StrategyModalProps {
   currentStrategy: StrategyConfig;
   onSelectStrategy: (strat: StrategyConfig) => void;
   onSaveAs: (filename: string, name: string) => void;
+  /** Chrome / Edge: open through the browser's Open dialog so Save can write back into the file. */
+  onOpenFromComputer?: () => Promise<boolean>;
 }
 
 export const StrategyModal: React.FC<StrategyModalProps> = ({
@@ -18,6 +20,7 @@ export const StrategyModal: React.FC<StrategyModalProps> = ({
   currentStrategy,
   onSelectStrategy,
   onSaveAs,
+  onOpenFromComputer,
 }) => {
   const [newFilename, setNewFilename] = useState<string>(
     `custom_strategy_${Date.now().toString().slice(-4)}.json`
@@ -143,16 +146,35 @@ export const StrategyModal: React.FC<StrategyModalProps> = ({
               <span className="block text-[11px] font-bold uppercase text-[#8E95A5] mb-2">
                 UPLOAD FROM COMPUTER:
               </span>
-              <label className="flex items-center justify-center gap-2 p-3 bg-[#0F1115] border border-dashed border-[#2D3139] hover:border-[#fabc4d] text-[#8E95A5] hover:text-white text-xs font-bold uppercase cursor-pointer transition-colors">
-                <Upload className="w-4 h-4 text-[#fabc4d]" />
-                <span>CHOOSE JSON FILE</span>
-                <input
-                  type="file"
-                  accept=".json"
-                  onChange={handleFileUpload}
-                  className="hidden"
-                />
-              </label>
+              {onOpenFromComputer ? (
+                // keeps a link to the file, so SAVE writes straight back into it
+                <button
+                  type="button"
+                  onClick={async () => {
+                    if (await onOpenFromComputer()) onClose();
+                  }}
+                  className="w-full flex items-center justify-center gap-2 p-3 bg-[#0F1115] border border-dashed border-[#2D3139] hover:border-[#fabc4d] text-[#8E95A5] hover:text-white text-xs font-bold uppercase cursor-pointer transition-colors"
+                >
+                  <Upload className="w-4 h-4 text-[#fabc4d]" />
+                  <span>CHOOSE JSON FILE</span>
+                </button>
+              ) : (
+                <label className="flex items-center justify-center gap-2 p-3 bg-[#0F1115] border border-dashed border-[#2D3139] hover:border-[#fabc4d] text-[#8E95A5] hover:text-white text-xs font-bold uppercase cursor-pointer transition-colors">
+                  <Upload className="w-4 h-4 text-[#fabc4d]" />
+                  <span>CHOOSE JSON FILE</span>
+                  <input
+                    type="file"
+                    accept=".json"
+                    onChange={handleFileUpload}
+                    className="hidden"
+                  />
+                </label>
+              )}
+              {onOpenFromComputer && (
+                <p className="mt-1.5 text-[10px] text-[#8E95A5]">
+                  The file stays linked — pressing SAVE afterwards writes straight back into it.
+                </p>
+              )}
             </div>
 
             {importError && (

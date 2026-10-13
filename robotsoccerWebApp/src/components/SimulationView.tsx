@@ -30,7 +30,7 @@ import {
   zoneColor,
 } from '../utils/zones';
 import { loopDepths } from '../utils/loops';
-import { PitchLines, PITCH_VIEWBOX, TEAM_COLORS } from './PitchLines';
+import { PitchLines, TEAM_COLORS } from './PitchLines';
 
 interface SimulationViewProps {
   strategy: StrategyConfig;
@@ -49,13 +49,24 @@ const SCENARIOS: Record<Scenario, { ball: [number, number]; vel?: [number, numbe
 
 const SIM_DT = 1 / 120; // fixed physics step (s)
 
-/** mm → % of the drawing (viewBox spans ±outerX, ±outerY). */
-const pctX = (x: number) => ((x + FIELD.outerX) / (2 * FIELD.outerX)) * 100;
+/**
+ * The drawing = the pitch (±outerX, ±outerY) plus a REST AREA strip on the left, past our goal,
+ * where robots can be parked to take them out of play.
+ */
+const BENCH_W = 380; // mm
+const VIEW_X0 = -FIELD.outerX - BENCH_W;
+const VIEW_W = 2 * FIELD.outerX + BENCH_W;
+const VIEW_BOX = `${VIEW_X0} ${-FIELD.outerY} ${VIEW_W} ${2 * FIELD.outerY}`;
+/** Rest area rectangle (mm). */
+const BENCH = { x0: VIEW_X0 + 25, x1: -FIELD.outerX - 25, y0: -FIELD.outerY + 25, y1: FIELD.outerY - 25 };
+
+/** mm → % of the drawing. */
+const pctX = (x: number) => ((x - VIEW_X0) / VIEW_W) * 100;
 const pctY = (y: number) => ((y + FIELD.outerY) / (2 * FIELD.outerY)) * 100;
 
 /** True-to-scale sizes as % of the drawing width (robots are 8.5 cm squares, ball Ø4.3 cm). */
-const ROBOT_W = ((2 * ROBOT_HALF) / (2 * FIELD.outerX)) * 100;
-const BALL_W = ((2 * BALL_R) / (2 * FIELD.outerX)) * 100;
+const ROBOT_W = ((2 * ROBOT_HALF) / VIEW_W) * 100;
+const BALL_W = ((2 * BALL_R) / VIEW_W) * 100;
 
 // The zone lattice spans the field lines (±halfX, ±halfY)
 const ZONE_LEFT = pctX(-FIELD.halfX);
@@ -67,9 +78,9 @@ export const SimulationView: React.FC<SimulationViewProps> = ({ strategy, onEdit
   const [isRunning, setIsRunning] = useState(true);
   const [simSpeed, setSimSpeed] = useState(1);
   const [scenario, setScenario] = useState<Scenario>('Free Match');
-  const [showZones, setShowZones] = useState(true);
-  const [showVectors, setShowVectors] = useState(true);
-  const [opponentsOn, setOpponentsOn] = useState(true);
+  const [showZones, setShowZones] = useState(false);
+  const [showVectors, setShowVectors] = useState(false);
+  const [opponentsOn, setOpponentsOn] = useState(false);
   const [, setFrame] = useState(0); // re-render trigger
 
   const worldRef = useRef<SimWorld>(createWorld());
@@ -139,7 +150,7 @@ export const SimulationView: React.FC<SimulationViewProps> = ({ strategy, onEdit
   const rawMm = (e: React.PointerEvent): [number, number] => {
     const r = fieldRef.current!.getBoundingClientRect();
     return [
-      ((e.clientX - r.left) / r.width) * 2 * FIELD.outerX - FIELD.outerX,
+      VIEW_X0 + ((e.clientX - r.left) / r.width) * VIEW_W,
       ((e.clientY - r.top) / r.height) * 2 * FIELD.outerY - FIELD.outerY,
     ];
   };
@@ -188,8 +199,9 @@ export const SimulationView: React.FC<SimulationViewProps> = ({ strategy, onEdit
     if (held) {
       const [rx, ry] = rawMm(e);
       const b = held.bot;
-      b.x = Math.max(-FIELD.halfX + ROBOT_HALF, Math.min(FIELD.halfX - ROBOT_HALF, rx + held.dx));
-      b.y = Math.max(-FIELD.halfY + ROBOT_HALF, Math.min(FIELD.halfY - ROBOT_HALF, ry + held.dy));
+      // free to follow the pointer between the rest area and the field; settled on release
+      b.x = Math.max(BENCH.x0 + ROBOT_HALF, Math.min(FIELD.halfX - ROBOT_HALF, rx + held.dx));
+      b.y = Math.max(BENCH.y0 + ROBOT_HALF, Math.min(BENCH.y1 - ROBOT_HALF, ry + held.dy));
       b.vx = b.vy = b.wl = b.wr = 0;
       return;
     }
@@ -212,6 +224,19 @@ export const SimulationView: React.FC<SimulationViewProps> = ({ strategy, onEdit
     if (robotDragRef.current) {
       const b = robotDragRef.current.bot;
       b.vx = b.vy = b.wl = b.wr = 0; // dropped robots start from a standstill
+      b.stuck = 0;
+      b.escape = null;
+      if (b.x < BENCH.x1) {
+        // dropped in the rest area → out of play, parked where it was put
+        b.benched = true;
+        b.x = Math.max(BENCH.x0 + ROBOT_HALF, Math.min(BENCH.x1 - ROBOT_HALF, b.x));
+        b.y = Math.max(BENCH.y0 + ROBOT_HALF, Math.min(BENCH.y1 - ROBOT_HALF, b.y));
+      } else {
+        // dropped on (or near) the field → back in play, inside the walls
+        b.benched = false;
+        b.x = Math.max(-FIELD.halfX + ROBOT_HALF, Math.min(FIELD.halfX - ROBOT_HALF, b.x));
+        b.y = Math.max(-FIELD.halfY + ROBOT_HALF, Math.min(FIELD.halfY - ROBOT_HALF, b.y));
+      }
       robotDragRef.current = null;
       setHeldRobot(null);
       return;
@@ -221,8 +246,8 @@ export const SimulationView: React.FC<SimulationViewProps> = ({ strategy, onEdit
     dragRef.current = null;
     // Release velocity = throw. A screen swipe is far faster than a real hand roll, so scale it
     // down and cap it at a firm roll along the carpet.
-    const THROW_SCALE = 0.4;
-    const MAX_THROW = 2500; // mm/s
+    const THROW_SCALE = 0.3;
+    const MAX_THROW = 1000; // mm/s — the hardest throw rolls ~1.6 m on this mat
     const vx = d.vx * THROW_SCALE;
     const vy = d.vy * THROW_SCALE;
     const sp = Math.hypot(vx, vy);
@@ -373,14 +398,46 @@ export const SimulationView: React.FC<SimulationViewProps> = ({ strategy, onEdit
               onPointerCancel={onFieldUp}
               className="relative bg-[#1a1c1f] border border-[#2D3139] overflow-hidden cursor-crosshair touch-none @container"
               style={{
-                aspectRatio: `${FIELD.outerX} / ${FIELD.outerY}`,
-                width: `min(100cqw, ${FIELD.outerX / FIELD.outerY} * 100cqh)`,
+                aspectRatio: `${VIEW_W} / ${2 * FIELD.outerY}`,
+                width: `min(100cqw, ${VIEW_W / (2 * FIELD.outerY)} * 100cqh)`,
               }}
             >
-              <svg
-                viewBox={PITCH_VIEWBOX}
-                className="absolute inset-0 w-full h-full pointer-events-none"
-              >
+              <svg viewBox={VIEW_BOX} className="absolute inset-0 w-full h-full pointer-events-none">
+                {/* Rest area: robots parked here are out of play */}
+                <rect
+                  x={BENCH.x0}
+                  y={BENCH.y0}
+                  width={BENCH.x1 - BENCH.x0}
+                  height={BENCH.y1 - BENCH.y0}
+                  fill="#121417"
+                  stroke="#8E95A5"
+                  strokeOpacity={0.6}
+                  strokeWidth={1.5}
+                  strokeDasharray="6 5"
+                  vectorEffect="non-scaling-stroke"
+                />
+                <text
+                  x={(BENCH.x0 + BENCH.x1) / 2}
+                  y={BENCH.y0 + 60}
+                  textAnchor="middle"
+                  fontSize={46}
+                  fontWeight={700}
+                  fill="#8E95A5"
+                  fontFamily="monospace"
+                >
+                  REST
+                </text>
+                <text
+                  x={(BENCH.x0 + BENCH.x1) / 2}
+                  y={BENCH.y0 + 110}
+                  textAnchor="middle"
+                  fontSize={46}
+                  fontWeight={700}
+                  fill="#8E95A5"
+                  fontFamily="monospace"
+                >
+                  AREA
+                </text>
                 <PitchLines />
               </svg>
 
@@ -420,7 +477,7 @@ export const SimulationView: React.FC<SimulationViewProps> = ({ strategy, onEdit
               {/* Target vectors */}
               {showVectors && (
                 <svg
-                  viewBox={PITCH_VIEWBOX}
+                  viewBox={VIEW_BOX}
                   className="absolute inset-0 w-full h-full pointer-events-none"
                 >
                   {w.friendly.map((r) => {
@@ -470,6 +527,7 @@ export const SimulationView: React.FC<SimulationViewProps> = ({ strategy, onEdit
                 const ours = r.team === 'friendly';
                 const hasStack = ours && !!routineFor(strategy, activeId, r.id)?.blocks.length;
                 const color = ours ? TEAM_COLORS.us : TEAM_COLORS.them;
+                const resting = r.benched && heldRobot !== r;
                 return (
                   <div
                     key={r.id}
@@ -480,6 +538,7 @@ export const SimulationView: React.FC<SimulationViewProps> = ({ strategy, onEdit
                       width: `${ROBOT_W}%`,
                       aspectRatio: '1',
                       transform: `translate(-50%, -50%) rotate(${r.angle}deg) ${heldRobot === r ? 'scale(1.15)' : ''}`,
+                      opacity: resting ? 0.5 : 1, // parked in the rest area
                     }}
                   >
                     <div
@@ -516,7 +575,7 @@ export const SimulationView: React.FC<SimulationViewProps> = ({ strategy, onEdit
           <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-xs text-[#8E95A5] font-mono">
             <span>
               Drag the ball to place it — flick and release to throw it. Drag a robot to move it
-              (pause first to set up a position).
+              (pause first to set up a position) — drop it in the REST AREA to take it out of play.
             </span>
             <span>
               <span className="font-bold" style={{ color: TEAM_COLORS.us }}>■ Us</span> attack{' '}

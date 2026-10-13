@@ -169,6 +169,8 @@ export interface SimRobot {
   stuck: number;
   /** When jammed: a short straight back-off away from the obstacle, then back to its job. */
   escape: { tx: number; ty: number; until: number } | null;
+  /** Taken out of play (parked in the rest area): no driving, no collisions, no ball. */
+  benched: boolean;
   home: [number, number, number];
 }
 
@@ -203,6 +205,8 @@ export interface SimWorld {
    * and bounces off every wall (goals included) without losing speed.
    */
   endlessBall?: { speed: number };
+  /** Strategy-builder previews: no lack-of-progress "referee". */
+  noReferee?: boolean;
   time: number;
   ball: SimBall;
   friendly: SimRobot[];
@@ -213,6 +217,8 @@ export interface SimWorld {
   events: string[];
   opponentsEnabled: boolean;
   oppKickCooldown: number;
+  /** Lack-of-progress watch: where the ball was, and since when it's barely moved. */
+  progress: { x: number; y: number; since: number };
 }
 
 interface Command {
@@ -257,6 +263,7 @@ const OPP_HOME: [number, number, number][] = [
   [695, -230, 180],
   [1215, 0, 180],
   [570, 300, 180],
+  [945, 560, 180], // B5 — mirrors our robot 5
 ];
 
 const freshExec = (): ExecState => ({
@@ -290,6 +297,7 @@ export const createWorld = (): SimWorld => {
     wr: 0,
     stuck: 0,
     escape: null,
+    benched: false,
     home: h,
   }));
   const opponents = OPP_HOME.map((h, i) => ({
@@ -305,6 +313,7 @@ export const createWorld = (): SimWorld => {
     wr: 0,
     stuck: 0,
     escape: null,
+    benched: false,
     home: h,
   }));
   const exec: Record<number, ExecState> = {};
@@ -320,12 +329,14 @@ export const createWorld = (): SimWorld => {
     events: [],
     opponentsEnabled: true,
     oppKickCooldown: 0,
+    progress: { x: 0, y: 0, since: 0 },
   };
 };
 
 /** Robots back to their kick-off spots, block stacks restarted. */
 export const resetPositions = (w: SimWorld, ball: [number, number] = [0, 0]) => {
   [...w.friendly, ...w.opponents].forEach((r) => {
+    if (r.benched) return; // robots in the rest area stay there
     r.x = r.home[0];
     r.y = r.home[1];
     r.angle = r.home[2];
@@ -337,6 +348,7 @@ export const resetPositions = (w: SimWorld, ball: [number, number] = [0, 0]) => 
     r.escape = null;
   });
   w.ball = { x: ball[0], y: ball[1], vx: 0, vy: 0 };
+  w.progress = { x: ball[0], y: ball[1], since: w.time };
   Object.keys(w.exec).forEach((k) => (w.exec[+k] = freshExec()));
   w.activeSituationId = null;
 };
@@ -548,12 +560,13 @@ const planKick = (
 
   // Wrong side of the ball → go round it
   const ahead = (bot.x - b.x) * dx + (bot.y - b.y) * dy > -CONTACT * 0.5;
-  if (ahead && toBallL < CONTACT + runUp + 300) {
+  if (ahead && toBallL < CONTACT + runUp + 150) {
     const side = (bot.x - b.x) * -dy + (bot.y - b.y) * dx >= 0 ? 1 : -1;
     st.status = `${label}: circling ball`;
     return {
-      tx: behind[0] + -dy * side * 200,
-      ty: behind[1] + dx * side * 200,
+      // go round the ball tightly — just wide enough for the robot to pass it
+      tx: behind[0] + -dy * side * 120,
+      ty: behind[1] + dx * side * 120,
       speed: 0.7,
       face,
       spin: 0,
@@ -725,7 +738,7 @@ const runBlock = (
         parsePoint(p.left ?? p.start) ?? (isGK ? NAMED_SPOTS['post l'] : DEFENDER_LEFT);
       const b =
         parsePoint(p.right ?? p.stop) ?? (isGK ? NAMED_SPOTS['post r'] : DEFENDER_RIGHT);
-      const kickout = clamp(parseNum(p.kickout, isGK ? 15 : 25), 0, 100) * 10; // cm → mm
+      const kickout = clamp(parseNum(p.kickout, 15), 0, 100) * 10; // cm → mm
       const ballToLine = distToSegment(ball.x, ball.y, a, b);
 
       if (isGK) {
@@ -932,29 +945,18 @@ const runBlock = (
       return out({ tx, ty, speed: 1, face: null, spin: 0, kick: null, axis: lineHeading });
     }
 
-    case 'kickA':
-    case 'kickB': {
-      const minAlign = clamp(parseNum(p.threshold, block.type === 'kickA' ? 0.85 : 0.65), 0, 1);
-      const pct = clamp(parseNum(p.speed, block.type === 'kickA' ? 95 : 75) / 100, 0.05, 1);
+    case 'kickA': {
+      const minAlign = clamp(parseNum(p.threshold, 0.85), 0, 1);
+      const pct = clamp(parseNum(p.speed, 95) / 100, 0.05, 1);
       if (st.t > 12) {
         st.status = 'Kick: gave up (timeout)';
         return { cmd: hold(bot), done: true };
       }
       if (st.phase === 1) return { cmd: hold(bot), done: true }; // kicked last tick
-      let aim: [number, number];
-      if (block.type === 'kickA') {
-        // Hit the ball in the direction the player chose (no auto-aim at the goal).
-        // Block angles: 0° = towards the opponent goal (right), counter-clockwise: 90° = up.
-        const rad = (-parseNum(p.angle, 0) * Math.PI) / 180; // screen y points down
-        aim = [ball.x + Math.cos(rad) * 2500, ball.y + Math.sin(rad) * 2500];
-      } else {
-        const mates = w.friendly
-          .filter((m) => m.id !== bot.id)
-          .map((m) => ({ m, fwd: m.x - ball.x, d: hyp(m.x - ball.x, m.y - ball.y) }))
-          .filter((o) => o.d > 250)
-          .sort((a, b) => b.fwd - a.fwd || a.d - b.d);
-        aim = mates.length ? [mates[0].m.x, mates[0].m.y] : [FIELD.halfX + 80, 0];
-      }
+      // Hit the ball in the direction the player chose (no auto-aim at the goal).
+      // Block angles: 0° = towards the opponent goal (right), counter-clockwise: 90° = up.
+      const rad = (-parseNum(p.angle, 0) * Math.PI) / 180; // screen y points down
+      const aim: [number, number] = [ball.x + Math.cos(rad) * 2500, ball.y + Math.sin(rad) * 2500];
       return {
         cmd: planKick(
           w,
@@ -963,9 +965,10 @@ const runBlock = (
           pct,
           minAlign,
           st,
-          block.type === 'kickA' ? 'KickA' : 'KickB',
+          'KickA',
           true,
-          p.runup !== undefined ? parseNum(p.runup, 40) * 10 : undefined
+          // KickA gets right up to the ball: a short run-up (10 cm unless the block says otherwise)
+          parseNum(p.runup, 10) * 10
         ),
         done: false,
       };
@@ -1479,6 +1482,36 @@ const stepBall = (w: SimWorld, dt: number): 'us' | 'them' | null => {
   return null;
 };
 
+/**
+ * Lack of progress (as in RoboCup Junior): if the ball hasn't moved more than 5 cm in 8 s — e.g.
+ * jammed against a wall where no robot can get behind it — the "referee" puts it on the nearest
+ * free spot mark (or the centre spot).
+ */
+const STUCK_MOVE = 50; // mm
+const STUCK_TIME = 8; // s
+const lackOfProgress = (w: SimWorld) => {
+  const b = w.ball;
+  if (hyp(b.x - w.progress.x, b.y - w.progress.y) > STUCK_MOVE) {
+    w.progress = { x: b.x, y: b.y, since: w.time };
+    return;
+  }
+  if (w.time - w.progress.since < STUCK_TIME) return;
+  const robots = [...w.friendly, ...(w.opponentsEnabled ? w.opponents : [])].filter((r) => !r.benched);
+  // only when robots are actually fighting over it — a ball just sitting there alone is left alone
+  if (!robots.some((r) => hyp(r.x - b.x, r.y - b.y) < 250)) return;
+  const marks: [number, number][] = [[0, 0]];
+  FIELD.spots.forEach(([sx, sy]) =>
+    marks.push([sx, sy], [-sx, sy], [sx, -sy], [-sx, -sy])
+  );
+  const free = marks.filter(([mx, my]) => robots.every((r) => hyp(r.x - mx, r.y - my) > ROBOT_HALF * 2.5));
+  const pick = (free.length ? free : marks).reduce((best, m) =>
+    hyp(m[0] - b.x, m[1] - b.y) < hyp(best[0] - b.x, best[1] - b.y) ? m : best
+  );
+  w.ball = { x: pick[0], y: pick[1], vx: 0, vy: 0 };
+  w.progress = { x: pick[0], y: pick[1], since: w.time };
+  log(w, 'Lack of progress — ball moved to a spot mark');
+};
+
 /* ------------------------------------------------------------------ */
 /* Main step                                                           */
 /* ------------------------------------------------------------------ */
@@ -1504,6 +1537,11 @@ export const step = (w: SimWorld, strategy: StrategyConfig, dt: number) => {
   const commands = new Map<number, Command>();
   w.friendly.forEach((bot) => {
     const st = w.exec[bot.id];
+    if (bot.benched) {
+      st.status = 'Resting in the rest area';
+      st.target = null;
+      return;
+    }
     const routine: RobotRoutine | null = routineFor(strategy, zoneId, bot.id);
     if ((routine?.id ?? null) !== st.routineId) {
       Object.assign(st, freshExec(), { routineId: routine?.id ?? null, role: st.role });
@@ -1592,26 +1630,27 @@ export const step = (w: SimWorld, strategy: StrategyConfig, dt: number) => {
   });
 
   // 3. Opponents
-  const opps = w.opponentsEnabled ? w.opponents : [];
+  const opps = (w.opponentsEnabled ? w.opponents : []).filter((o) => !o.benched);
   opps.forEach((o) => commands.set(o.id, opponentCommand(w, o)));
 
   // 4. Physics
-  const all = [...w.friendly, ...opps];
+  const ours = w.friendly.filter((r) => !r.benched); // robots in the rest area sit out
+  const all = [...ours, ...opps];
   const before = new Map(all.map((r) => [r, [r.x, r.y] as const]));
-  w.friendly.forEach((r) => drive(r, commands.get(r.id)!, dt, w.time));
+  ours.forEach((r) => drive(r, commands.get(r.id)!, dt, w.time));
   opps.forEach((r) => drive(r, commands.get(r.id)!, dt, w.time));
   separateRobots(all);
   unstick(all, before, w.time, dt);
 
-  w.friendly.forEach((r) => {
+  ours.forEach((r) => {
     const cmd = commands.get(r.id)!;
     if (ballContact(w, r, cmd.kick)) {
       const st = w.exec[r.id];
       const routine = routineFor(strategy, zoneId, r.id);
       const blk = routine?.blocks.length ? routine.blocks[st.blockIdx] : st.role;
-      if (blk && (blk.type === 'kickA' || blk.type === 'kickB')) {
+      if (blk && blk.type === 'kickA') {
         st.phase = 1; // finishes the kick block next tick
-        log(w, `${r.label} ${blk.type === 'kickA' ? 'shot (KickA)' : 'passed (KickB)'}`);
+        log(w, `${r.label} shot (KickA)`);
       } else if (blk && (blk.type === 'defender' || blk.type === 'goalkeeper')) {
         st.phase = 1; // back to the line
         log(w, `${r.label} cleared the ball (${blk.type === 'goalkeeper' ? 'GoalKeeper' : 'Defender'})`);
@@ -1623,6 +1662,7 @@ export const step = (w: SimWorld, strategy: StrategyConfig, dt: number) => {
   });
 
   const goal = stepBall(w, dt);
+  if (!goal && !w.noReferee) lackOfProgress(w);
   if (goal) {
     w.score[goal] += 1;
     log(w, goal === 'us' ? 'GOAL! We scored' : 'Goal conceded');

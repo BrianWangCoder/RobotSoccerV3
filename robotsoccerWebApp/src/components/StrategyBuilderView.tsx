@@ -10,7 +10,6 @@ import {
   Shield,
   Activity,
   Zap,
-  Flame,
   X,
   Plus,
   ChevronDown,
@@ -187,7 +186,7 @@ const BLOCK_DEFS: Record<BlockType, BlockDef> = {
     fields: [
       { key: 'left', label: 'Left', width: 'w-20', def: '[-79, 40]', alias: 'start' },
       { key: 'right', label: 'Right', width: 'w-20', def: '[-79, -40]', alias: 'stop' },
-      { key: 'kickout', label: 'Kick-out', width: 'w-10', def: '25', kind: 'stepper', step: 5, min: 0, max: 100, unit: 'cm' },
+      { key: 'kickout', label: 'Kick-out', width: 'w-10', def: '15', kind: 'stepper', step: 5, min: 0, max: 100, unit: 'cm' },
     ],
   },
   goalkeeper: {
@@ -214,20 +213,8 @@ const BLOCK_DEFS: Record<BlockType, BlockDef> = {
       { key: 'angle', label: 'Direction', width: 'w-14', def: '0', kind: 'stepper', step: 15, min: -180, max: 360, unit: '°' },
       { key: 'threshold', label: 'Align', width: 'w-12', def: '0.85' },
       { key: 'speed', label: 'Speed', width: 'w-14', def: '95%' },
-      { key: 'runup', label: 'Run-up', width: 'w-10', def: '25', kind: 'stepper', step: 5, min: 5, max: 60, unit: 'cm' },
-    ],
-  },
-  kickB: {
-    label: 'KickB',
-    category: 'kick',
-    icon: Flame,
-    bg: 'bg-[#c46a35]',
-    hover: 'hover:bg-[#a95b2e]',
-    input: 'bg-[#a95b2e]',
-    fields: [
-      { key: 'threshold', label: 'Align', width: 'w-12', def: '0.65' },
-      { key: 'speed', label: 'Speed', width: 'w-14', def: '75%' },
-      { key: 'runup', label: 'Run-up', width: 'w-10', def: '20', kind: 'stepper', step: 5, min: 5, max: 60, unit: 'cm' },
+      // short: KickA gets right up to the ball before it strikes
+      { key: 'runup', label: 'Run-up', width: 'w-10', def: '10', kind: 'stepper', step: 5, min: 5, max: 60, unit: 'cm' },
     ],
   },
   pause: {
@@ -271,7 +258,7 @@ const LOOP_COLOR = '#6b5ba8';
 const PALETTE_GROUPS: { title: string; color: string; types: BlockType[] }[] = [
   { title: '● MOTION & KINEMATICS', color: 'text-[#3b82f6]', types: ['move', 'moveFromTo', 'moveSteps', 'turn', 'point', 'spin'] },
   { title: '● TACTICAL ROLES', color: 'text-[#22c55e]', types: ['defender', 'goalkeeper'] },
-  { title: '● KICK PROTOCOL', color: 'text-[#f97316]', types: ['kickA', 'kickB'] },
+  { title: '● KICK PROTOCOL', color: 'text-[#f97316]', types: ['kickA'] },
   { title: '● CONTROL', color: 'text-[#a78bfa]', types: ['loop', 'pause'] }, // loopEnd comes with Loop
 ];
 
@@ -315,7 +302,9 @@ type DropHint =
  */
 type Clip =
   | { kind: 'blocks'; blocks: ScriptBlock[] }
-  | { kind: 'routine'; robotId: number; blocks: ScriptBlock[] };
+  | { kind: 'routine'; robotId: number; blocks: ScriptBlock[] }
+  // several robot hats Ctrl-clicked: each robot's whole stack
+  | { kind: 'routines'; stacks: { robotId: number; blocks: ScriptBlock[] }[] };
 let clipboard: Clip | null = null;
 
 /** Deep copy of blocks with fresh ids (so copies are independent of the originals). */
@@ -759,6 +748,14 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
   // Move / Defender / GoalKeeper block whose two points are being placed on the field
   // (left click = first point, right click = second point)
   const [editingRangeFor, setEditingRangeFor] = useState<string | null>(null);
+  // Ctrl/Cmd-click multi-selection of blocks in one stack (for copy / paste)
+  const [multiSel, setMultiSel] = useState<{ routineId: string; ids: string[] } | null>(null);
+  const multiSelRef = useRef(multiSel);
+  multiSelRef.current = multiSel;
+  // Ctrl/Cmd-click multi-selection of robot hats (whole stacks) for copy / paste
+  const [multiHats, setMultiHats] = useState<string[]>([]);
+  const multiHatsRef = useRef(multiHats);
+  multiHatsRef.current = multiHats;
   // KickA preview ball position per block (right-click on the field to place it)
   const [kickBallAt, setKickBallAt] = useState<Record<string, [number, number]>>({});
   const showBlock = (routineId: string, blockId: string, type?: string) => {
@@ -837,6 +834,26 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
   /** What Ctrl+C would copy right now: the selected block, or the whole stack if a hat is selected. */
   const currentSelection = (): Clip | null => {
     const s = strategyRef.current;
+    const hats = multiHatsRef.current
+      .map((id) => s.routines.find((r) => r.id === id))
+      .filter((r): r is RobotRoutine => !!r);
+    if (hats.length > 1)
+      return { kind: 'routines', stacks: hats.map((r) => ({ robotId: r.robotId, blocks: r.blocks })) };
+    const ms = multiSelRef.current;
+    if (ms && ms.ids.length) {
+      // Ctrl-clicked blocks, in stack order; a selected Loop brings everything inside it
+      const routine = s.routines.find((r) => r.id === ms.routineId);
+      if (routine) {
+        const take = new Set<number>();
+        routine.blocks.forEach((b, i) => {
+          if (!ms.ids.includes(b.id)) return;
+          const [a, z] = blockSpan(routine.blocks, i);
+          for (let k = a; k < z; k++) take.add(k);
+        });
+        const blocks = routine.blocks.filter((_, i) => take.has(i));
+        if (blocks.length) return { kind: 'blocks', blocks };
+      }
+    }
     const p = previewRef.current;
     if (!p) return null;
     const routine = s.routines.find((r) => r.id === p.routineId);
@@ -857,8 +874,12 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
     }
     clipboard = sel;
     flash(
-      sel.kind === 'routine'
+      sel.kind === 'routines'
+        ? `Copied ${sel.stacks.length} robot stacks (Robots ${sel.stacks.map((x) => x.robotId).join(', ')})`
+        : sel.kind === 'routine'
         ? `Copied Robot ${sel.robotId} stack (${sel.blocks.length} blocks)`
+        : sel.blocks.filter((b) => b.type !== 'loopEnd').length > 1
+        ? `Copied ${sel.blocks.filter((b) => b.type !== 'loopEnd').length} blocks`
         : `Copied ${BLOCK_DEFS[sel.blocks[0].type as BlockType]?.label ?? 'block'}`
     );
     return true;
@@ -866,6 +887,7 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
 
   const doPaste = () => {
     const clip = clipboard;
+    setMultiSel(null); // the pasted copy becomes the selection, not the old multi-pick
     if (!clip) {
       flash('Nothing copied yet');
       return;
@@ -873,6 +895,30 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
     const s = strategyRef.current;
     const zoneId = s.activeSituationId;
     const zoneName = s.situations.find((z) => z.id === zoneId)?.name ?? 'zone';
+
+    if (clip.kind === 'routines') {
+      // Several stacks → each onto the same robot in the zone you're looking at (added to the end
+      // of that robot's stack there, or as a new stack). Done in one go so none overwrite another.
+      let routines = s.routines;
+      let firstId: string | null = null;
+      clip.stacks.forEach(({ robotId, blocks }) => {
+        const clones = cloneBlocks(blocks);
+        const existing = routines.find((r) => r.robotId === robotId && r.situationId === zoneId);
+        if (existing) {
+          routines = routines.map((r) => (r.id === existing.id ? { ...r, blocks: [...r.blocks, ...clones] } : r));
+          firstId ??= existing.id;
+        } else {
+          const id = newId(`routine_r${robotId}`);
+          routines = [...routines, { id, robotId, situationId: zoneId, blocks: clones }];
+          firstId ??= id;
+        }
+      });
+      setMultiHats([]);
+      commit(routines);
+      if (firstId) showStack(firstId);
+      flash(`Pasted ${clip.stacks.length} robot stacks into ${zoneName}`);
+      return;
+    }
 
     if (clip.kind === 'routine') {
       // Whole stack → same robot in the zone you're looking at
@@ -907,6 +953,10 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
   // Ctrl/Cmd + C / V / D — ignored while typing in a text box
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        if (multiSelRef.current) setMultiSel(null);
+        if (multiHatsRef.current.length) setMultiHats([]);
+      }
       if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
       const t = e.target as HTMLElement | null;
       if (t?.closest?.('input, textarea, select, [contenteditable="true"]')) return;
@@ -1132,13 +1182,38 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
     blockId: string
   ) => {
     e.stopPropagation();
+    if ((e.ctrlKey || e.metaKey) && e.button === 0) {
+      // Ctrl/Cmd-click: add / remove this block from the multi-selection (no drag)
+      if ((e.target as HTMLElement).closest('input, [data-no-drag]')) return;
+      e.preventDefault();
+      const cur = multiSelRef.current;
+      const ids = cur && cur.routineId === routine.id ? cur.ids : [];
+      // a plain-clicked block becomes part of the selection when you start Ctrl-clicking
+      const start =
+        ids.length === 0 && preview?.routineId === routine.id && preview.mode === 'block' && preview.blockId
+          ? [preview.blockId]
+          : ids;
+      setMultiHats([]); // picking blocks drops any hat selection
+      const removing = start.includes(blockId);
+      const next = removing ? start.filter((x) => x !== blockId) : [...start, blockId];
+      setMultiSel(next.length ? { routineId: routine.id, ids: next } : null);
+      // the "current" block (paste goes after it) is the last one picked — when un-picking, fall
+      // back to the last still selected, so the un-picked block loses its highlight
+      const current = removing ? next[next.length - 1] : blockId;
+      if (current) showBlock(routine.id, current, routine.blocks.find((b) => b.id === current)?.type);
+      else setPreview(null);
+      if (next.length > 1) flash(`${next.length} blocks selected — Ctrl+C to copy`);
+      return;
+    }
     const idx = routine.blocks.findIndex((b) => b.id === blockId);
     // Scratch behaviour: grabbing a block takes every block below it too — but blocks inside a
     // loop only take the rest of that loop's body, and grabbing a Loop takes all of it
     const blockIds = routine.blocks.slice(idx, runEnd(routine.blocks, idx)).map((b) => b.id);
-    beginPointer(e, { kind: 'stack', routineId: routine.id, blockIds }, () =>
-      showBlock(routine.id, blockId, routine.blocks.find((b) => b.id === blockId)?.type)
-    );
+    beginPointer(e, { kind: 'stack', routineId: routine.id, blockIds }, () => {
+      setMultiSel(null); // plain click → back to a single selection
+      setMultiHats([]);
+      showBlock(routine.id, blockId, routine.blocks.find((b) => b.id === blockId)?.type);
+    });
   };
 
   const startPaletteHatDrag = (e: React.PointerEvent<HTMLElement>, robotId: number) => {
@@ -1651,10 +1726,11 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
             key={block.id}
             block={block}
             selected={
-              preview?.routineId === routine.id &&
-              (isEnd
-                ? preview.mode === 'block' && preview.blockId === block.id // bottom bar picked
-                : preview.mode === 'stack' || preview.blockId === block.id)
+              (!isEnd && multiSel?.routineId === routine.id && multiSel.ids.includes(block.id)) ||
+              (preview?.routineId === routine.id &&
+                (isEnd
+                  ? preview.mode === 'block' && preview.blockId === block.id // bottom bar picked
+                  : preview.mode === 'stack' || preview.blockId === block.id))
             }
             onPointerDown={
               isEnd
@@ -1690,10 +1766,37 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
           <HatView
             robotId={routine.robotId}
             situationName={situationNameFor(routine.situationId)}
-            selected={preview?.routineId === routine.id && preview.mode === 'stack'}
-            onPointerDown={(e) =>
-              beginPointer(e, { kind: 'routine', routineId: routine.id }, () => showStack(routine.id))
+            selected={
+              multiHats.includes(routine.id) ||
+              (preview?.routineId === routine.id && preview.mode === 'stack')
             }
+            onPointerDown={(e) => {
+              if ((e.ctrlKey || e.metaKey) && e.button === 0) {
+                // Ctrl/Cmd-click: add / remove this whole stack from the hat selection (no drag)
+                e.preventDefault();
+                e.stopPropagation();
+                setMultiSel(null);
+                const cur = multiHatsRef.current;
+                // a plain-clicked hat joins the selection when you start Ctrl-clicking
+                const start =
+                  cur.length === 0 && preview?.mode === 'stack' && preview.routineId !== routine.id
+                    ? [preview.routineId]
+                    : cur;
+                const next = start.includes(routine.id)
+                  ? start.filter((x) => x !== routine.id)
+                  : [...start, routine.id];
+                setMultiHats(next);
+                if (next.length) showStack(next[next.length - 1]);
+                else setPreview(null);
+                if (next.length > 1) flash(`${next.length} robot stacks selected — Ctrl+C to copy`);
+                return;
+              }
+              beginPointer(e, { kind: 'routine', routineId: routine.id }, () => {
+                setMultiHats([]); // plain click → back to a single selection
+                setMultiSel(null);
+                showStack(routine.id);
+              });
+            }}
             onDelete={() => handleDeleteRoutine(routine.id)}
           />
           <div className="flex flex-col space-y-1 mt-1 pl-3 border-l-2 border-[#fabc4d]/30 min-h-[8px]">
@@ -1868,7 +1971,7 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
             left: parsePoint(val('left')) ?? (isGK ? NAMED_SPOTS['post l'] : [-790, -400]),
             right: parsePoint(val('right')) ?? (isGK ? NAMED_SPOTS['post r'] : [-790, 400]),
             // the GoalKeeper never leaves its line, so it has no kick-out range
-            kickoutCm: isGK ? 0 : parseNum(val('kickout'), 25),
+            kickoutCm: isGK ? 0 : parseNum(val('kickout'), 15),
             isGK,
             isMove: false,
             isPath: false,

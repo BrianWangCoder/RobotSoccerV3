@@ -9,7 +9,6 @@ export type BlockType =
   | 'defender'
   | 'goalkeeper'
   | 'kickA'
-  | 'kickB'
   | 'pause'
   | 'loop' // C-loop header (holds the repeat count) …
   | 'loopEnd'; // … and the bar that closes it — the blocks between are inside the loop

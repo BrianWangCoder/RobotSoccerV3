@@ -87,6 +87,7 @@ const makeWorld = (spec: PreviewSpec): SimWorld => {
   w.friendly = [bot]; // only the robot being previewed
   w.ball = { x: spec.ball[0], y: spec.ball[1], vx: 0, vy: 0 };
   if (spec.endless) w.endlessBall = { speed: ENDLESS_BALL_SPEED };
+  w.noReferee = true;
   return w;
 };
 
@@ -174,7 +175,7 @@ export const BlockPreview: React.FC<BlockPreviewProps> = ({ spec, box }) => {
             cyc.idx = st.blockIdx;
             cyc.t = st.t;
             if (!spec.endless && ((wrapped && !tacticalOnly) || w.time > MAX_CYCLE)) {
-              const kicked = spec.blocks.some((b) => b.type === 'kickA' || b.type === 'kickB');
+              const kicked = spec.blocks.some((b) => b.type === 'kickA');
               cyc.pause = kicked ? PAUSE_AFTER_KICK : PAUSE_AFTER_CYCLE;
             }
           }

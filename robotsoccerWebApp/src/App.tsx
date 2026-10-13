@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Header, ActiveScreen } from './components/Header';
 import { HomeView } from './components/HomeView';
 import { StrategyBuilderView } from './components/StrategyBuilderView';
@@ -10,6 +10,25 @@ import { StrategyModal } from './components/StrategyModal';
 import { createBlankStrategy } from './data/defaultStrategies';
 import { StrategyConfig } from './types/strategy';
 import { Check } from 'lucide-react';
+import {
+  StrategyFileHandle,
+  canSaveInPlace,
+  downloadFile,
+  isCancel,
+  pickOpenFile,
+  pickSaveFile,
+  writeToFile,
+} from './utils/fileAccess';
+
+/** Blocks that no longer exist (e.g. KickB) are dropped from strategies loaded from a file. */
+const REMOVED_BLOCKS = new Set(['kickB']);
+const withoutRemovedBlocks = (s: StrategyConfig): StrategyConfig => ({
+  ...s,
+  routines: (s.routines ?? []).map((r) => ({
+    ...r,
+    blocks: (r.blocks ?? []).filter((b) => !REMOVED_BLOCKS.has(b.type as string)),
+  })),
+});
 
 export default function App() {
   const [currentScreen, setCurrentScreen] = useState<ActiveScreen>('home');
@@ -28,23 +47,53 @@ export default function App() {
     setToastMessage(msg);
     setTimeout(() => {
       setToastMessage(null);
-    }, 2500);
+    }, msg.length > 60 ? 7000 : 2500); // longer messages stay up longer
   };
 
-  const handleSaveStrategy = () => {
-    // Generate JSON and trigger browser download
-    const dataStr =
-      'data:text/json;charset=utf-8,' +
-      encodeURIComponent(JSON.stringify(strategy, null, 2));
-    const downloadAnchor = document.createElement('a');
-    downloadAnchor.setAttribute('href', dataStr);
-    downloadAnchor.setAttribute('download', strategy.filename);
-    document.body.appendChild(downloadAnchor);
-    downloadAnchor.click();
-    downloadAnchor.remove();
+  // The file on the computer this strategy is linked to (Chrome / Edge). Save writes straight
+  // back into it; it's set by the first Save, by Save As, or by opening a file.
+  const fileRef = useRef<StrategyFileHandle | null>(null);
 
-    showToast(`Saved to ${strategy.filename}`);
+  /** Writes `strat` into the linked file, asking where to save first if there isn't one yet. */
+  const saveTo = async (strat: StrategyConfig, askWhere: boolean) => {
+    const text = JSON.stringify(strat, null, 2);
+    if (!canSaveInPlace()) {
+      downloadFile(strat.filename, text); // can't write into files here: download a copy
+      showToast(
+        window.isSecureContext
+          ? `Downloaded ${strat.filename} — this browser can't save into the same file (use Chrome or Edge)`
+          : `Downloaded ${strat.filename} — to save into the same file, open the app at http://localhost:3000 or with npm run dev:https`
+      );
+      return;
+    }
+    try {
+      if (askWhere || !fileRef.current) fileRef.current = await pickSaveFile(strat.filename);
+      const handle = fileRef.current;
+      const saved = handle.name !== strat.filename ? { ...strat, filename: handle.name } : strat;
+      await writeToFile(handle, JSON.stringify(saved, null, 2));
+      if (saved !== strat) setStrategy(saved);
+      showToast(`Saved to ${handle.name}`);
+    } catch (err) {
+      if (isCancel(err)) return; // closed the dialog — nothing to do
+      showToast(`Couldn't save: ${(err as Error).message}`);
+    }
   };
+
+  const handleSaveStrategy = () => saveTo(strategy, false);
+
+  // Ctrl/Cmd+S = Save (instead of the browser saving the web page)
+  const saveRef = useRef(handleSaveStrategy);
+  saveRef.current = handleSaveStrategy;
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 's') {
+        e.preventDefault();
+        saveRef.current();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
 
   const handleSaveAsStrategy = (filename: string, name: string) => {
     const updated: StrategyConfig = {
@@ -54,7 +103,25 @@ export default function App() {
       name,
     };
     setStrategy(updated);
-    showToast(`Saved new file: ${filename}`);
+    // a new file: ask where, then that becomes the file Save writes to
+    saveTo(updated, true);
+  };
+
+  /** Import through the browser's Open dialog so the file stays linked for Save (Chrome / Edge). */
+  const handleOpenFromComputer = async () => {
+    try {
+      const { handle, text } = await pickOpenFile();
+      const parsed = JSON.parse(text) as StrategyConfig;
+      if (!parsed.routines) throw new Error('That file is not a strategy (no routines).');
+      fileRef.current = handle;
+      setStrategy(withoutRemovedBlocks({ ...parsed, filename: handle.name }));
+      showToast(`Opened ${handle.name} — Save now writes back into it`);
+      return true;
+    } catch (err) {
+      if (isCancel(err)) return false;
+      showToast(`Couldn't open: ${(err as Error).message}`);
+      return false;
+    }
   };
 
   return (
@@ -129,10 +196,12 @@ export default function App() {
         onClose={() => setStrategyModalMode(null)}
         currentStrategy={strategy}
         onSelectStrategy={(newStrat) => {
-          setStrategy(newStrat);
+          fileRef.current = null; // loaded without a file link (pasted JSON / plain upload)
+          setStrategy(withoutRemovedBlocks(newStrat));
           showToast(`Loaded ${newStrat.filename}`);
         }}
         onSaveAs={handleSaveAsStrategy}
+        onOpenFromComputer={canSaveInPlace() ? handleOpenFromComputer : undefined}
       />
     </div>
   );
