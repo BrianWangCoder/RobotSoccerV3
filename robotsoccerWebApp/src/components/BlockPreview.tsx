@@ -10,6 +10,11 @@ export interface PreviewSpec {
   ball: [number, number];
   /** Bump to force a restart. */
   replay: number;
+  /**
+   * KickA preview: the robot hits the ball once the chosen way, then the ball rolls on slowly
+   * forever (no friction, bouncing off the walls) — no replay cycle.
+   */
+  endless?: boolean;
 }
 
 interface BlockPreviewProps {
@@ -22,6 +27,7 @@ const DT = 1 / 120;
 const PAUSE_AFTER_CYCLE = 0.9; // s to hold the final pose before replaying
 const PAUSE_AFTER_KICK = 2.5; // s — long enough to watch the ball roll out
 const MAX_CYCLE = 14; // s safety restart
+const ENDLESS_BALL_SPEED = 200; // mm/s — KickA preview: a slow, never-ending roll
 
 /** Fake one-zone strategy covering the whole field, so the real engine runs the blocks as-is. */
 const previewStrategy = (spec: PreviewSpec): StrategyConfig => {
@@ -45,7 +51,15 @@ const previewStrategy = (spec: PreviewSpec): StrategyConfig => {
       },
     ],
     routines: [
-      { id: '__routine', robotId: spec.robotId, situationId: '__zone', blocks: spec.blocks },
+      {
+        id: '__routine',
+        robotId: spec.robotId,
+        situationId: '__zone',
+        // KickA preview: hit it once, then stand still and watch it roll on forever
+        blocks: spec.endless
+          ? [...spec.blocks, { id: '__pause', type: 'pause', category: 'control', params: {} }]
+          : spec.blocks,
+      },
     ],
   } as unknown as StrategyConfig;
 };
@@ -72,6 +86,7 @@ const makeWorld = (spec: PreviewSpec): SimWorld => {
   bot.home = home;
   w.friendly = [bot]; // only the robot being previewed
   w.ball = { x: spec.ball[0], y: spec.ball[1], vx: 0, vy: 0 };
+  if (spec.endless) w.endlessBall = { speed: ENDLESS_BALL_SPEED };
   return w;
 };
 
@@ -88,7 +103,7 @@ export const BlockPreview: React.FC<BlockPreviewProps> = ({ spec, box }) => {
 
   // Restart whenever what we're previewing actually changes
   const key = spec
-    ? `${spec.robotId}|${spec.replay}|${spec.ball.join(',')}|${JSON.stringify(
+    ? `${spec.robotId}|${spec.replay}|${spec.endless ? 'endless' : ''}|${spec.ball.join(',')}|${JSON.stringify(
         spec.blocks.map((b) => [b.id, b.type, b.params])
       )}`
     : '';
@@ -158,7 +173,7 @@ export const BlockPreview: React.FC<BlockPreviewProps> = ({ spec, box }) => {
             const wrapped = st.blockIdx < cyc.idx || (st.blockIdx === cyc.idx && st.t < cyc.t - 1e-6);
             cyc.idx = st.blockIdx;
             cyc.t = st.t;
-            if ((wrapped && !tacticalOnly) || w.time > MAX_CYCLE) {
+            if (!spec.endless && ((wrapped && !tacticalOnly) || w.time > MAX_CYCLE)) {
               const kicked = spec.blocks.some((b) => b.type === 'kickA' || b.type === 'kickB');
               cyc.pause = kicked ? PAUSE_AFTER_KICK : PAUSE_AFTER_CYCLE;
             }
@@ -243,7 +258,11 @@ export const BlockPreview: React.FC<BlockPreviewProps> = ({ spec, box }) => {
 
       {/* Status chip */}
       <div className="absolute left-1.5 bottom-1.5 max-w-[90%] px-1.5 py-0.5 bg-[#0F1115]/90 border border-[#38bdf8]/50 text-[9px] font-mono text-[#bae6fd] truncate">
-        {paused ? '↻ replaying…' : `${block?.type ?? ''} — ${st?.status ?? ''}`}
+        {paused
+          ? '↻ replaying…'
+          : spec.endless && block?.type === 'pause'
+          ? 'kickA — hit! the ball rolls on (no friction)'
+          : `${block?.type ?? ''} — ${st?.status ?? ''}`}
       </div>
     </div>
   );

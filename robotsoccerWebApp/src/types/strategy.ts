@@ -1,14 +1,20 @@
 export type BlockType =
   | 'hat'
   | 'move'
+  | 'moveFromTo'
   | 'turn'
   | 'spin'
+  | 'point'
+  | 'moveSteps'
   | 'defender'
   | 'goalkeeper'
   | 'kickA'
-  | 'kickB';
+  | 'kickB'
+  | 'pause'
+  | 'loop' // C-loop header (holds the repeat count) …
+  | 'loopEnd'; // … and the bar that closes it — the blocks between are inside the loop
 
-export type BlockCategory = 'robot' | 'motion' | 'tactical' | 'kick';
+export type BlockCategory = 'robot' | 'motion' | 'tactical' | 'kick' | 'control';
 
 export interface ScriptBlock {
   id: string;
@@ -18,9 +24,12 @@ export interface ScriptBlock {
     start?: string;
     stop?: string;
     speed?: number | string;
-    angle?: number | string;
+    angle?: number | string; // Turn: relative · Point: heading · KickA: direction to hit the ball
     threshold?: number | string;
     rpm?: number | string;
+    duration?: number | string; // ms (Spin)
+    times?: number | string; // Loop: how many times the blocks inside run
+    distance?: number | string;
     situationId?: string;
   };
 }

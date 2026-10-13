@@ -8,6 +8,7 @@ import {
   Zap,
   Bot,
   Cpu,
+  PauseCircle,
   Trophy,
 } from 'lucide-react';
 import { StrategyConfig } from '../types/strategy';
@@ -28,6 +29,7 @@ import {
   shapePath,
   zoneColor,
 } from '../utils/zones';
+import { loopDepths } from '../utils/loops';
 import { PitchLines, PITCH_VIEWBOX, TEAM_COLORS } from './PitchLines';
 
 interface SimulationViewProps {
@@ -559,13 +561,16 @@ export const SimulationView: React.FC<SimulationViewProps> = ({ strategy, onEdit
                   </div>
                   {routine && routine.blocks.length > 0 ? (
                     <div className="space-y-1">
-                      {routine.blocks.map((blk, idx) => {
+                      {routine.blocks.map((blk, idx, all) => {
                         const current = idx === st?.blockIdx;
+                        const depth = loopDepths(all)[idx]; // indent blocks inside loops
                         const hex =
                           blk.category === 'motion'
                             ? '#2563eb'
                             : blk.category === 'tactical'
                             ? '#16a34a'
+                            : blk.category === 'control'
+                            ? '#7c6bc4'
                             : '#ea580c';
                         return (
                           <div
@@ -576,6 +581,7 @@ export const SimulationView: React.FC<SimulationViewProps> = ({ strategy, onEdit
                             style={{
                               backgroundColor: `${hex}${current ? '66' : '1a'}`,
                               borderColor: `${hex}99`,
+                              marginLeft: depth * 12,
                             }}
                           >
                             <span className="flex items-center gap-1.5 font-bold uppercase">
@@ -583,11 +589,13 @@ export const SimulationView: React.FC<SimulationViewProps> = ({ strategy, onEdit
                                 <Navigation className="w-3 h-3" />
                               ) : blk.category === 'tactical' ? (
                                 <Shield className="w-3 h-3" />
+                              ) : blk.category === 'control' ? (
+                                <PauseCircle className="w-3 h-3" />
                               ) : (
                                 <Zap className="w-3 h-3" />
                               )}
                               {current ? '▶ ' : ''}
-                              {blk.type}
+                              {blk.type === 'loopEnd' ? 'end loop' : blk.type}
                             </span>
                             <span className="text-[10px] font-mono opacity-80 truncate ml-2">
                               {Object.values(blk.params as Record<string, string>).join(' · ')}

@@ -23,6 +23,11 @@ import {
   ChevronLeft,
   ChevronRight,
   Crosshair,
+  Compass,
+  Footprints,
+  PauseCircle,
+  Route,
+  Repeat,
 } from 'lucide-react';
 import {
   StrategyConfig,
@@ -31,8 +36,9 @@ import {
   BlockType,
 } from '../types/strategy';
 import { BlockPreview, PreviewSpec } from './BlockPreview';
-import { parsePoint, parseNum, NAMED_SPOTS, FIELD } from '../sim/engine';
+import { parsePoint, parseNum, NAMED_SPOTS, FIELD, BALL_R as BALL_R_MM } from '../sim/engine';
 import { PitchLines, PITCH_VIEWBOX } from './PitchLines';
+import { blockSpan, loopEndOf, loopStartOf, runEnd } from '../utils/loops';
 import {
   Pt,
   ZoneMode,
@@ -77,6 +83,9 @@ const fieldValue = (params: Record<string, string | undefined>, f: FieldDef) =>
 
 /** Defender / GoalKeeper: guard a line, clear the ball if it gets within the kick-out range. */
 const isRoleType = (t: string) => t === 'defender' || t === 'goalkeeper';
+/** Blocks whose two points are placed on the field with left / right click. */
+const isFieldEditable = (t: string) =>
+  isRoleType(t) || t === 'move' || t === 'moveFromTo' || t === 'kickA';
 
 interface BlockDef {
   label: string;
@@ -99,8 +108,8 @@ const BLOCK_DEFS: Record<BlockType, BlockDef> = {
     hover: 'hover:bg-[#35579a]',
     input: 'bg-[#2d4a85]',
     fields: [
-      { key: 'start', label: 'Start', width: 'w-16', def: '[0, 0]' },
-      { key: 'stop', label: 'Stop', width: 'w-20', def: '[40, -15]' },
+      // destination only — the robot drives there from wherever it is
+      { key: 'stop', label: 'Destination', width: 'w-20', def: '[40, -15]' },
       { key: 'speed', label: 'Speed', width: 'w-14', def: '80%' },
     ],
   },
@@ -116,6 +125,46 @@ const BLOCK_DEFS: Record<BlockType, BlockDef> = {
       { key: 'angle', label: 'Angle', width: 'w-16', def: '180°' },
     ],
   },
+  point: {
+    label: 'Point',
+    category: 'motion',
+    icon: Compass,
+    bg: 'bg-[#3d64b0]',
+    hover: 'hover:bg-[#35579a]',
+    input: 'bg-[#2d4a85]',
+    fields: [
+      // 0° = pointing right (towards the opponent goal), counter-clockwise: 90° = up
+      { key: 'angle', label: 'To', width: 'w-14', def: '90', kind: 'stepper', step: 15, min: -180, max: 360, unit: '°' },
+      { key: 'speed', label: 'Speed', width: 'w-16', def: '180°/s' },
+    ],
+  },
+  moveFromTo: {
+    label: 'Move from & to',
+    category: 'motion',
+    icon: Route,
+    bg: 'bg-[#3d64b0]',
+    hover: 'hover:bg-[#35579a]',
+    input: 'bg-[#2d4a85]',
+    fields: [
+      // drives to FROM first, then to TO
+      { key: 'start', label: 'From', width: 'w-20', def: '[-40, 15]' },
+      { key: 'stop', label: 'To', width: 'w-20', def: '[40, -15]' },
+      { key: 'speed', label: 'Speed', width: 'w-14', def: '80%' },
+    ],
+  },
+  moveSteps: {
+    label: 'Move steps',
+    category: 'motion',
+    icon: Footprints,
+    bg: 'bg-[#3d64b0]',
+    hover: 'hover:bg-[#35579a]',
+    input: 'bg-[#2d4a85]',
+    fields: [
+      // along the way the robot is facing; negative = backwards
+      { key: 'distance', label: 'Distance', width: 'w-14', def: '20', kind: 'stepper', step: 5, min: -265, max: 265, unit: 'cm' },
+      { key: 'speed', label: 'Speed', width: 'w-14', def: '50%' },
+    ],
+  },
   spin: {
     label: 'Spin',
     category: 'motion',
@@ -123,7 +172,10 @@ const BLOCK_DEFS: Record<BlockType, BlockDef> = {
     bg: 'bg-[#3d64b0]',
     hover: 'hover:bg-[#35579a]',
     input: 'bg-[#2d4a85]',
-    fields: [{ key: 'rpm', label: 'Speed [rpm]', width: 'w-16', def: '450' }],
+    fields: [
+      { key: 'rpm', label: 'Speed [rpm]', width: 'w-16', def: '450' },
+      { key: 'duration', label: 'Time', width: 'w-14', def: '1500', kind: 'stepper', step: 100, min: 0, max: 10000, unit: 'ms' },
+    ],
   },
   defender: {
     label: 'Defender',
@@ -148,7 +200,6 @@ const BLOCK_DEFS: Record<BlockType, BlockDef> = {
     fields: [
       { key: 'left', label: 'Left', width: 'w-20', def: '[Post L]', alias: 'start' },
       { key: 'right', label: 'Right', width: 'w-20', def: '[Post R]', alias: 'stop' },
-      { key: 'kickout', label: 'Kick-out', width: 'w-10', def: '15', kind: 'stepper', step: 5, min: 0, max: 100, unit: 'cm' },
     ],
   },
   kickA: {
@@ -159,6 +210,8 @@ const BLOCK_DEFS: Record<BlockType, BlockDef> = {
     hover: 'hover:bg-[#a95b2e]',
     input: 'bg-[#a95b2e]',
     fields: [
+      // which way to hit the ball: 0° = towards the opponent goal (right), 90° = up, like Point
+      { key: 'angle', label: 'Direction', width: 'w-14', def: '0', kind: 'stepper', step: 15, min: -180, max: 360, unit: '°' },
       { key: 'threshold', label: 'Align', width: 'w-12', def: '0.85' },
       { key: 'speed', label: 'Speed', width: 'w-14', def: '95%' },
       { key: 'runup', label: 'Run-up', width: 'w-10', def: '25', kind: 'stepper', step: 5, min: 5, max: 60, unit: 'cm' },
@@ -177,12 +230,49 @@ const BLOCK_DEFS: Record<BlockType, BlockDef> = {
       { key: 'runup', label: 'Run-up', width: 'w-10', def: '20', kind: 'stepper', step: 5, min: 5, max: 60, unit: 'cm' },
     ],
   },
+  pause: {
+    // Holds position until the ball changes zone — makes the blocks above it run only once
+    label: 'Pause',
+    category: 'control',
+    icon: PauseCircle,
+    bg: 'bg-[#6b5ba8]',
+    hover: 'hover:bg-[#5c4d93]',
+    input: 'bg-[#4f427f]',
+    fields: [],
+  },
+  loop: {
+    // Scratch-style C block: the blocks dropped inside it run this many times, then the stack
+    // carries on below it
+    label: 'Loop',
+    category: 'control',
+    icon: Repeat,
+    bg: 'bg-[#6b5ba8]',
+    hover: 'hover:bg-[#5c4d93]',
+    input: 'bg-[#4f427f]',
+    fields: [
+      { key: 'times', label: 'Repeat', width: 'w-10', def: '2', kind: 'stepper', step: 1, min: 1, max: 50, unit: '×' },
+    ],
+  },
+  loopEnd: {
+    // the bottom bar of a Loop's C shape — created with the Loop, never on its own
+    label: 'end loop',
+    category: 'control',
+    icon: Repeat,
+    bg: 'bg-[#6b5ba8]',
+    hover: 'hover:bg-[#5c4d93]',
+    input: 'bg-[#4f427f]',
+    fields: [],
+  },
 };
 
+/** Purple used for a Loop's C shape (header, arm and bottom). */
+const LOOP_COLOR = '#6b5ba8';
+
 const PALETTE_GROUPS: { title: string; color: string; types: BlockType[] }[] = [
-  { title: '● MOTION & KINEMATICS', color: 'text-[#3b82f6]', types: ['move', 'turn', 'spin'] },
+  { title: '● MOTION & KINEMATICS', color: 'text-[#3b82f6]', types: ['move', 'moveFromTo', 'moveSteps', 'turn', 'point', 'spin'] },
   { title: '● TACTICAL ROLES', color: 'text-[#22c55e]', types: ['defender', 'goalkeeper'] },
   { title: '● KICK PROTOCOL', color: 'text-[#f97316]', types: ['kickA', 'kickB'] },
+  { title: '● CONTROL', color: 'text-[#a78bfa]', types: ['loop', 'pause'] }, // loopEnd comes with Loop
 ];
 
 const newId = (prefix: string) =>
@@ -197,6 +287,10 @@ const createBlock = (type: BlockType): ScriptBlock => {
     params: Object.fromEntries(d.fields.map((f) => [f.key, f.def])),
   } as ScriptBlock;
 };
+
+/** The block(s) a palette item adds: a Loop comes as its C shape (header + empty mouth + end). */
+const createBlocks = (type: BlockType): ScriptBlock[] =>
+  type === 'loop' ? [createBlock('loop'), createBlock('loopEnd')] : [createBlock(type)];
 
 /* ------------------------------------------------------------------ */
 /* Drag & drop types                                                   */
@@ -323,6 +417,29 @@ const BlockView: React.FC<BlockViewProps> = ({
   const def = BLOCK_DEFS[block.type as BlockType];
   const Icon = def.icon;
   const params = block.params as Record<string, string | undefined>;
+
+  if (block.type === 'loopEnd') {
+    // bottom of the Loop's C shape, with Scratch's loop-back arrow. Not draggable on its own (grab
+    // the Loop header to move the whole loop) — clicking it selects it, so new blocks from the
+    // palette go AFTER the loop
+    return (
+      <div
+        data-block-id={ghost ? undefined : block.id}
+        onPointerDown={onPointerDown}
+        className={`h-6 w-full flex items-center justify-end px-2 ${ghost ? '' : 'cursor-pointer'} ${
+          // selected = new blocks go underneath the loop: light it up white
+          selected ? 'ring-2 ring-white ring-offset-1 ring-offset-[#0F1115] shadow-[0_0_10px_rgba(255,255,255,0.6)]' : ''
+        }`}
+        style={{
+          backgroundColor: selected ? '#a99ae0' : LOOP_COLOR,
+          borderBottomLeftRadius: 4,
+          borderBottomRightRadius: 4,
+        }}
+      >
+        <Repeat className="w-3.5 h-3.5 text-white/90" />
+      </div>
+    );
+  }
 
   return (
     <div
@@ -459,6 +576,67 @@ const HatView: React.FC<HatViewProps> = ({
   </div>
 );
 
+/**
+ * A Loop drawn like Scratch's C block: the header on top, a thick arm down the left, the blocks
+ * inside sitting in the mouth, and the bottom piece closing it.
+ */
+const LoopShape: React.FC<{ header: React.ReactNode; footer: React.ReactNode; children: React.ReactNode }> = ({
+  header,
+  footer,
+  children,
+}) => (
+  <div className="flex flex-col">
+    {header}
+    <div className="flex">
+      <div className="w-4 shrink-0" style={{ backgroundColor: LOOP_COLOR }} />
+      <div className="flex-1 min-w-0 flex flex-col space-y-1 py-1 min-h-[2.25rem]">{children}</div>
+    </div>
+    {footer}
+  </div>
+);
+
+/**
+ * Turns a flat block list into nodes, wrapping each Loop's body in a LoopShape (nested loops nest).
+ * `gap(i)` may return a drop placeholder for the gap just before blocks[i] — the gap before a
+ * loop's bottom piece is inside its mouth. Document order of the blocks is unchanged, so drop
+ * indexes still map straight onto the flat list.
+ */
+const loopTree = (
+  blocks: ScriptBlock[],
+  renderBlock: (b: ScriptBlock, i: number) => React.ReactNode,
+  gap?: (i: number) => React.ReactNode | null
+): React.ReactNode[] => {
+  const seq = (from: number, to: number): React.ReactNode[] => {
+    const out: React.ReactNode[] = [];
+    let i = from;
+    while (i < to) {
+      const g = gap?.(i);
+      if (g) out.push(g);
+      const b = blocks[i];
+      const e = b.type === 'loop' ? loopEndOf(blocks, i) : -1;
+      if (e > i && e < to) {
+        const inner = seq(i + 1, e);
+        const gi = gap?.(e);
+        if (gi) inner.push(gi);
+        out.push(
+          <LoopShape key={b.id} header={renderBlock(b, i)} footer={renderBlock(blocks[e], e)}>
+            {inner}
+          </LoopShape>
+        );
+        i = e + 1;
+      } else {
+        out.push(renderBlock(b, i));
+        i++;
+      }
+    }
+    return out;
+  };
+  const nodes = seq(0, blocks.length);
+  const last = gap?.(blocks.length);
+  if (last) nodes.push(last);
+  return nodes;
+};
+
 /* ------------------------------------------------------------------ */
 /* Zone drawing helpers                                                */
 /* ------------------------------------------------------------------ */
@@ -578,11 +756,14 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
   previewRef.current = preview;
   const selectedRobotRef = useRef(selectedRobotForAdd);
   selectedRobotRef.current = selectedRobotForAdd;
-  // Defender / GoalKeeper block whose range is being edited on the field (left/right click)
+  // Move / Defender / GoalKeeper block whose two points are being placed on the field
+  // (left click = first point, right click = second point)
   const [editingRangeFor, setEditingRangeFor] = useState<string | null>(null);
+  // KickA preview ball position per block (right-click on the field to place it)
+  const [kickBallAt, setKickBallAt] = useState<Record<string, [number, number]>>({});
   const showBlock = (routineId: string, blockId: string, type?: string) => {
     setPreview({ routineId, blockId, mode: 'block' });
-    setEditingRangeFor(type && isRoleType(type) ? blockId : null);
+    setEditingRangeFor(type && isFieldEditable(type) ? blockId : null);
   };
   const showStack = (routineId: string) => {
     setPreview((p) => ({
@@ -662,8 +843,10 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
     if (!routine) return null;
     if (p.mode === 'stack' || !p.blockId)
       return { kind: 'routine', robotId: routine.robotId, blocks: routine.blocks };
-    const blk = routine.blocks.find((b) => b.id === p.blockId);
-    return blk ? { kind: 'blocks', blocks: [blk] } : null;
+    const i = routine.blocks.findIndex((b) => b.id === p.blockId);
+    if (i < 0) return null;
+    const [a, b] = blockSpan(routine.blocks, i); // a Loop is copied with everything inside it
+    return { kind: 'blocks', blocks: routine.blocks.slice(a, b) };
   };
 
   const doCopy = () => {
@@ -705,10 +888,8 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
       ? s.routines.find((r) => r.id === p.routineId && r.situationId === zoneId)
       : undefined;
     if (target) {
-      const at =
-        p!.mode === 'block' && p!.blockId
-          ? target.blocks.findIndex((b) => b.id === p!.blockId) + 1
-          : target.blocks.length;
+      const sel = p!.mode === 'block' && p!.blockId ? target.blocks.findIndex((b) => b.id === p!.blockId) : -1;
+      const at = sel >= 0 ? blockSpan(target.blocks, sel)[1] : target.blocks.length;
       const id = pasteBlocksAt(target.id, at, clip.blocks);
       if (id) showBlock(target.id, id, clip.blocks[0].type);
       flash(`Pasted into Robot ${target.robotId}`);
@@ -787,7 +968,7 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
       let moving: ScriptBlock[];
 
       if (payload.kind === 'new-block') {
-        moving = [createBlock(payload.blockType)];
+        moving = createBlocks(payload.blockType);
       } else if (payload.kind === 'stack') {
         const src = routines.find((r) => r.id === payload.routineId);
         if (!src) return;
@@ -952,8 +1133,9 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
   ) => {
     e.stopPropagation();
     const idx = routine.blocks.findIndex((b) => b.id === blockId);
-    // Scratch behaviour: grabbing a block takes every block below it too
-    const blockIds = routine.blocks.slice(idx).map((b) => b.id);
+    // Scratch behaviour: grabbing a block takes every block below it too — but blocks inside a
+    // loop only take the rest of that loop's body, and grabbing a Loop takes all of it
+    const blockIds = routine.blocks.slice(idx, runEnd(routine.blocks, idx)).map((b) => b.id);
     beginPointer(e, { kind: 'stack', routineId: routine.id, blockIds }, () =>
       showBlock(routine.id, blockId, routine.blocks.find((b) => b.id === blockId)?.type)
     );
@@ -1267,14 +1449,39 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
   /* ---------------- click-to-add (still supported) ---------------- */
 
   const handleAddBlockToRobot = (type: BlockType, targetRobotId: number = selectedRobotForAdd) => {
-    const newBlock = createBlock(type);
+    const added = createBlocks(type);
+    const newBlock = added[0];
     const existing = strategy.routines.find(
       (r) => r.robotId === targetRobotId && r.situationId === strategy.activeSituationId
     );
 
+    // Where the new block goes, based on what's selected in this stack:
+    //  - a Loop header → inside that loop, after the blocks already in it
+    //  - a Loop's bottom bar → straight after the loop
+    //  - any other block → straight after it (so repeated clicks keep filling in order)
+    //  - nothing selected → the end of the stack
+    let insertAt = existing ? existing.blocks.length : 0;
+    if (existing && preview?.mode === 'block' && preview.routineId === existing.id && preview.blockId) {
+      const sel = existing.blocks.findIndex((b) => b.id === preview.blockId);
+      if (sel >= 0) {
+        const selType = existing.blocks[sel].type;
+        const end = selType === 'loop' ? loopEndOf(existing.blocks, sel) : -1;
+        insertAt =
+          selType === 'loop'
+            ? end >= 0
+              ? end
+              : sel + 1
+            : selType === 'loopEnd'
+            ? sel + 1
+            : blockSpan(existing.blocks, sel)[1];
+      }
+    }
+
     const updatedRoutines: RobotRoutine[] = existing
       ? strategy.routines.map((r) =>
-          r.id === existing.id ? { ...r, blocks: [...r.blocks, newBlock] } : r
+          r.id === existing.id
+            ? { ...r, blocks: [...r.blocks.slice(0, insertAt), ...added, ...r.blocks.slice(insertAt)] }
+            : r
         )
       : [
           ...strategy.routines,
@@ -1282,7 +1489,7 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
             id: newId(`routine_r${targetRobotId}`),
             robotId: targetRobotId,
             situationId: strategy.activeSituationId,
-            blocks: [newBlock],
+            blocks: added,
           },
         ];
 
@@ -1324,9 +1531,13 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
   const handleDeleteBlock = (routineId: string, blockId: string) => {
     onUpdateStrategy({
       ...strategy,
-      routines: strategy.routines.map((r) =>
-        r.id === routineId ? { ...r, blocks: r.blocks.filter((b) => b.id !== blockId) } : r
-      ),
+      routines: strategy.routines.map((r) => {
+        if (r.id !== routineId) return r;
+        const i = r.blocks.findIndex((b) => b.id === blockId);
+        if (i < 0) return r;
+        const [a, b] = blockSpan(r.blocks, i); // a Loop goes with everything inside it
+        return { ...r, blocks: [...r.blocks.slice(0, a), ...r.blocks.slice(b)] };
+      }),
     });
   };
 
@@ -1411,7 +1622,6 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
 
   const blockPlaceholder = (
     <div
-      key="__block_placeholder"
       className="bg-[#8E95A5]/20 border border-dashed border-[#8E95A5]/60"
       style={{ height: Math.min(movingBlockCount, 4) * 36 }}
     />
@@ -1431,27 +1641,39 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
     const visibleBlocks = routine.blocks.filter((b) => !hiddenBlockIds.has(b.id));
     const showHere = hint?.kind === 'blocks' && hint.routineId === routine.id;
 
-    const blockNodes: React.ReactNode[] = [];
-    visibleBlocks.forEach((block, i) => {
-      if (showHere && hint.index === i) blockNodes.push(blockPlaceholder);
-      blockNodes.push(
-        <BlockView
-          key={block.id}
-          block={block}
-          selected={
-            preview?.routineId === routine.id &&
-            (preview.mode === 'stack' || preview.blockId === block.id)
-          }
-          onPointerDown={(e) => startStackDrag(e, routine, block.id)}
-          onParamChange={(key, value) => {
-            handleUpdateParam(routine.id, block.id, key, value);
-            showBlock(routine.id, block.id, block.type);
-          }}
-          onDelete={() => handleDeleteBlock(routine.id, block.id)}
-        />
-      );
-    });
-    if (showHere && hint.index === visibleBlocks.length) blockNodes.push(blockPlaceholder);
+    // Scratch-style C loops: each Loop is drawn as one C shape holding the blocks inside it
+    const blockNodes = loopTree(
+      visibleBlocks,
+      (block) => {
+        const isEnd = block.type === 'loopEnd';
+        return (
+          <BlockView
+            key={block.id}
+            block={block}
+            selected={
+              preview?.routineId === routine.id &&
+              (isEnd
+                ? preview.mode === 'block' && preview.blockId === block.id // bottom bar picked
+                : preview.mode === 'stack' || preview.blockId === block.id)
+            }
+            onPointerDown={
+              isEnd
+                ? (e) => {
+                    e.stopPropagation();
+                    showBlock(routine.id, block.id, block.type);
+                  }
+                : (e) => startStackDrag(e, routine, block.id)
+            }
+            onParamChange={(key, value) => {
+              handleUpdateParam(routine.id, block.id, key, value);
+              showBlock(routine.id, block.id, block.type);
+            }}
+            onDelete={isEnd ? undefined : () => handleDeleteBlock(routine.id, block.id)}
+          />
+        );
+      },
+      (i) => (showHere && hint.index === i ? <div key="__ph">{blockPlaceholder}</div> : null)
+    );
 
     return (
       <div
@@ -1496,14 +1718,20 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
     let content: React.ReactNode = null;
 
     if (p.kind === 'new-block') {
-      content = <BlockView ghost block={createBlock(p.blockType)} />;
+      content = (
+        <div className="flex flex-col space-y-1">
+          {loopTree(createBlocks(p.blockType), (b) => (
+            <BlockView key={b.id} ghost block={b} />
+          ))}
+        </div>
+      );
     } else if (p.kind === 'stack') {
       const src = strategy.routines.find((r) => r.id === p.routineId);
       content = (
         <div className="flex flex-col space-y-1">
-          {src?.blocks
-            .filter((b) => p.blockIds.includes(b.id))
-            .map((b) => <BlockView key={b.id} ghost block={b} />)}
+          {loopTree(src?.blocks.filter((b) => p.blockIds.includes(b.id)) ?? [], (b) => (
+            <BlockView key={b.id} ghost block={b} />
+          ))}
         </div>
       );
     } else if (p.kind === 'new-hat') {
@@ -1516,7 +1744,7 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
             <HatView ghost robotId={r.robotId} situationName={situationNameFor(r.situationId)} />
             {r.blocks.length > 0 && (
               <div className="flex flex-col space-y-1 mt-1 pl-3 border-l-2 border-[#fabc4d]/30">
-                {r.blocks.map((b) => (
+                {loopTree(r.blocks, (b) => (
                   <BlockView key={b.id} ghost block={b} />
                 ))}
               </div>
@@ -1544,12 +1772,90 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
 
   /* ---------------- defender / goalkeeper range editing ---------------- */
 
+  /** Middle of a zone in simulator millimetres (where the preview ball starts). */
+  const zoneCenterMm = (situationId: string): [number, number] => {
+    const sit = strategy.situations.find((s) => s.id === situationId);
+    const c = sit ? shapeCentroid(shapeOf(sit)) : null;
+    if (!c) return [-400, 0]; // no zone drawn yet: our half
+    return [-FIELD.halfX + c[0] * 2 * FIELD.halfX, -FIELD.halfY + c[1] * 2 * FIELD.halfY];
+  };
+
   const rangeRoutine = editingRangeFor
     ? strategy.routines.find((r) => r.blocks.some((b) => b.id === editingRangeFor))
     : undefined;
   const rangeBlock = rangeRoutine?.blocks.find((b) => b.id === editingRangeFor);
   const rangeEdit =
-    rangeRoutine && rangeBlock && isRoleType(rangeBlock.type)
+    rangeRoutine && rangeBlock && rangeBlock.type === 'kickA'
+      ? (() => {
+          const prm = rangeBlock.params as Record<string, string | undefined>;
+          const field = BLOCK_DEFS.kickA.fields.find((f) => f.key === 'angle')!;
+          // where the preview ball sits: placed with right-click, else the middle of the zone
+          const ball = kickBallAt[rangeBlock.id] ?? zoneCenterMm(rangeRoutine.situationId);
+          return {
+            routine: rangeRoutine,
+            block: rangeBlock,
+            label: 'KickA',
+            left: ball,
+            right: ball,
+            kickoutCm: 0,
+            isGK: false,
+            isMove: false,
+            isPath: false,
+            isKick: true,
+            kickDeg: parseNum(fieldValue(prm, field), 0),
+            keys: ['angle', 'angle'] as const,
+            tags: ['', ''] as const,
+            names: ['direction', 'direction'] as const,
+          };
+        })()
+      : rangeRoutine && rangeBlock && rangeBlock.type === 'moveFromTo'
+      ? (() => {
+          const prm = rangeBlock.params as Record<string, string | undefined>;
+          const fields = BLOCK_DEFS.moveFromTo.fields;
+          const val = (k: string) => fieldValue(prm, fields.find((f) => f.key === k)!);
+          const start = parsePoint(val('start')) ?? [0, 0];
+          return {
+            routine: rangeRoutine,
+            block: rangeBlock,
+            label: 'Move from & to',
+            left: start,
+            right: parsePoint(val('stop')) ?? start,
+            kickoutCm: 0,
+            isGK: false,
+            isMove: false,
+            isPath: true,
+            isKick: false,
+            kickDeg: 0,
+            keys: ['start', 'stop'] as const,
+            tags: ['S', 'E'] as const,
+            names: ['from', 'to'] as const,
+          };
+        })()
+      : rangeRoutine && rangeBlock && rangeBlock.type === 'move'
+      ? (() => {
+          const prm = rangeBlock.params as Record<string, string | undefined>;
+          const fields = BLOCK_DEFS.move.fields;
+          const val = (k: string) => fieldValue(prm, fields.find((f) => f.key === k)!);
+          const dest = parsePoint(val('stop')) ?? [0, 0];
+          return {
+            routine: rangeRoutine,
+            block: rangeBlock,
+            label: 'Move',
+            left: dest,
+            right: dest,
+            kickoutCm: 0,
+            isGK: false,
+            isMove: true,
+            /** block params set by left / right click (Move only uses left click) */
+            isPath: false,
+            isKick: false,
+            kickDeg: 0,
+            keys: ['stop', 'stop'] as const,
+            tags: ['⚑', '⚑'] as const,
+            names: ['destination', 'destination'] as const,
+          };
+        })()
+      : rangeRoutine && rangeBlock && isRoleType(rangeBlock.type)
       ? (() => {
           const prm = rangeBlock.params as Record<string, string | undefined>;
           const fields = BLOCK_DEFS[rangeBlock.type as BlockType].fields;
@@ -1561,7 +1867,16 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
             label: isGK ? 'GoalKeeper' : 'Defender',
             left: parsePoint(val('left')) ?? (isGK ? NAMED_SPOTS['post l'] : [-790, -400]),
             right: parsePoint(val('right')) ?? (isGK ? NAMED_SPOTS['post r'] : [-790, 400]),
-            kickoutCm: parseNum(val('kickout'), isGK ? 15 : 25),
+            // the GoalKeeper never leaves its line, so it has no kick-out range
+            kickoutCm: isGK ? 0 : parseNum(val('kickout'), 25),
+            isGK,
+            isMove: false,
+            isPath: false,
+            isKick: false,
+            kickDeg: 0,
+            keys: ['left', 'right'] as const,
+            tags: ['L', 'R'] as const,
+            names: ['left end', 'right end'] as const,
           };
         })()
       : null;
@@ -1598,14 +1913,39 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
 
   const setRangeEnd = (end: 'left' | 'right', e: React.PointerEvent) => {
     if (!rangeEdit) return;
+    if (rangeEdit.isKick) {
+      const el = fieldRef.current;
+      if (!el) return;
+      const r = el.getBoundingClientRect();
+      const xmm = -FIELD.halfX + ((e.clientX - r.left) / r.width) * 2 * FIELD.halfX;
+      const ymm = -FIELD.halfY + ((e.clientY - r.top) / r.height) * 2 * FIELD.halfY;
+      if (end === 'right') {
+        // right-click: put the preview ball here
+        const m = BALL_R_MM + 5;
+        const at: [number, number] = [
+          Math.max(-FIELD.halfX + m, Math.min(FIELD.halfX - m, xmm)),
+          Math.max(-FIELD.halfY + m, Math.min(FIELD.halfY - m, ymm)),
+        ];
+        setKickBallAt((prev) => ({ ...prev, [rangeEdit.block.id]: at }));
+        return;
+      }
+      // left-click / drag: aim — direction from the ball to the pointer, block degrees, 5° steps
+      const [bx, by] = rangeEdit.left;
+      if (Math.hypot(xmm - bx, ymm - by) < 20) return; // too close to the ball to read a direction
+      const deg = Math.round(((Math.atan2(-(ymm - by), xmm - bx) * 180) / Math.PI) / 5) * 5;
+      handleUpdateParam(rangeEdit.routine.id, rangeEdit.block.id, 'angle', String(deg === -180 ? 180 : deg));
+      return;
+    }
     const pt = pointerToCm(e);
-    if (pt) handleUpdateParam(rangeEdit.routine.id, rangeEdit.block.id, end, pt);
+    const key = rangeEdit.keys[end === 'left' ? 0 : 1];
+    if (pt) handleUpdateParam(rangeEdit.routine.id, rangeEdit.block.id, key, pt);
   };
 
   const handleRangePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     const end = e.button === 0 ? 'left' : e.button === 2 ? 'right' : null;
     if (!end) return;
     e.preventDefault();
+    if (rangeEdit?.isMove && end === 'right') return; // Move: left click only
     e.currentTarget.setPointerCapture(e.pointerId);
     rangeDragRef.current = end;
     setRangeEnd(end, e);
@@ -1629,29 +1969,34 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
 
   /* ---------------- preview spec ---------------- */
 
-  /** Middle of a zone in simulator millimetres (where the preview ball starts). */
-  const zoneCenterMm = (situationId: string): [number, number] => {
-    const sit = strategy.situations.find((s) => s.id === situationId);
-    const c = sit ? shapeCentroid(shapeOf(sit)) : null;
-    if (!c) return [-1500, 300];
-    return [-FIELD.halfX + c[0] * 2 * FIELD.halfX, -FIELD.halfY + c[1] * 2 * FIELD.halfY];
-  };
-
   const previewRoutine = preview
     ? strategy.routines.find((r) => r.id === preview.routineId)
     : undefined;
   const previewBlocks = previewRoutine
     ? preview!.mode === 'block'
-      ? previewRoutine.blocks.filter((b) => b.id === preview!.blockId)
+      ? (() => {
+          let i = previewRoutine.blocks.findIndex((b) => b.id === preview!.blockId);
+          if (i < 0) return [];
+          if (previewRoutine.blocks[i].type === 'loopEnd') i = Math.max(0, loopStartOf(previewRoutine.blocks, i));
+          const [a, b] = blockSpan(previewRoutine.blocks, i);
+          return previewRoutine.blocks.slice(a, b);
+        })()
       : previewRoutine.blocks
     : [];
+  // Previewing a single KickA block: its own (right-click placed) ball, rolling slowly forever
+  const kickPreview =
+    preview?.mode === 'block' && previewBlocks.length === 1 && previewBlocks[0].type === 'kickA'
+      ? previewBlocks[0]
+      : null;
   const previewSpec: PreviewSpec | null =
     previewRoutine && previewBlocks.length
       ? {
           robotId: previewRoutine.robotId,
           blocks: previewBlocks,
-          ball: zoneCenterMm(previewRoutine.situationId),
+          ball:
+            (kickPreview && kickBallAt[kickPreview.id]) || zoneCenterMm(previewRoutine.situationId),
           replay: previewReplay,
+          endless: !!kickPreview,
         }
       : null;
 
@@ -1784,8 +2129,9 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
                   )}
                 </svg>
 
-                {/* Defender / GoalKeeper range: guard line + kick-out band + L/R handles */}
-                {rangeEdit && (
+                {/* Move from & to path (S → E), or Defender / GoalKeeper range (guard line +
+                    kick-out band) with its two handles */}
+                {rangeEdit && !rangeEdit.isMove && !rangeEdit.isKick && (
                   <>
                     <svg
                       viewBox={`${-FIELD.halfX} ${-FIELD.halfY} ${2 * FIELD.halfX} ${2 * FIELD.halfY}`}
@@ -1817,19 +2163,90 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
                     </svg>
                     {(
                       [
-                        ['L', rangeEdit.left, '#38bdf8'],
-                        ['R', rangeEdit.right, '#f472b6'],
+                        [rangeEdit.tags[0], rangeEdit.left, '#38bdf8'],
+                        [rangeEdit.tags[1], rangeEdit.right, '#f472b6'],
                       ] as const
                     ).map(([tag, pt, col]) => (
                       <div
                         key={tag}
-                        className="absolute z-30 w-4 h-4 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 bg-[#0F1115] text-[8px] font-bold flex items-center justify-center pointer-events-none"
+                        className="absolute z-40 w-4 h-4 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 bg-[#0F1115] text-[8px] font-bold flex items-center justify-center pointer-events-none"
                         style={{ left: `${fx(pt[0])}%`, top: `${fy(pt[1])}%`, borderColor: col, color: col }}
                       >
                         {tag}
                       </div>
                     ))}
                   </>
+                )}
+
+                {/* Move from & to: arrowhead halfway along the path, pointing from S to E */}
+                {rangeEdit?.isPath &&
+                  Math.hypot(rangeEdit.right[0] - rangeEdit.left[0], rangeEdit.right[1] - rangeEdit.left[1]) >
+                    1 && (
+                    <div
+                      className="absolute z-20 pointer-events-none text-white text-[11px] leading-none"
+                      style={{
+                        left: `${fx((rangeEdit.left[0] + rangeEdit.right[0]) / 2)}%`,
+                        top: `${fy((rangeEdit.left[1] + rangeEdit.right[1]) / 2)}%`,
+                        transform: `translate(-50%, -50%) rotate(${
+                          (Math.atan2(
+                            rangeEdit.right[1] - rangeEdit.left[1],
+                            rangeEdit.right[0] - rangeEdit.left[0]
+                          ) *
+                            180) /
+                          Math.PI
+                        }deg)`,
+                      }}
+                    >
+                      ▶
+                    </div>
+                  )}
+
+                {/* KickA: the ball with an arrow showing which way it will be hit */}
+                {rangeEdit?.isKick &&
+                  (() => {
+                    const [bx, by] = rangeEdit.left;
+                    const rad = (-rangeEdit.kickDeg * Math.PI) / 180; // block degrees → screen
+                    const len = 320; // mm
+                    const tx = bx + Math.cos(rad) * len;
+                    const ty = by + Math.sin(rad) * len;
+                    const head = (side: 1 | -1) => {
+                      const a = rad + Math.PI + side * 0.45;
+                      return `${tx + Math.cos(a) * 70},${ty + Math.sin(a) * 70}`;
+                    };
+                    return (
+                      <svg
+                        viewBox={`${-FIELD.halfX} ${-FIELD.halfY} ${2 * FIELD.halfX} ${2 * FIELD.halfY}`}
+                        preserveAspectRatio="none"
+                        className="absolute inset-0 w-full h-full overflow-visible pointer-events-none z-40"
+                      >
+                        <line
+                          x1={bx}
+                          y1={by}
+                          x2={tx}
+                          y2={ty}
+                          stroke="#fabc4d"
+                          strokeWidth={3}
+                          vectorEffect="non-scaling-stroke"
+                        />
+                        <polygon points={`${tx},${ty} ${head(1)} ${head(-1)}`} fill="#fabc4d" />
+                        <circle cx={bx} cy={by} r={30} fill="#ffffff" stroke="#fabc4d" strokeWidth={2} vectorEffect="non-scaling-stroke" />
+                      </svg>
+                    );
+                  })()}
+
+                {/* Move: destination flag */}
+                {rangeEdit?.isMove && (
+                  <div
+                    className="absolute z-40 w-5 h-5 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 bg-[#0F1115] text-[10px] font-bold flex items-center justify-center pointer-events-none"
+                    style={{
+                      left: `${fx(rangeEdit.left[0])}%`,
+                      top: `${fy(rangeEdit.left[1])}%`,
+                      borderColor: '#38bdf8',
+                      color: '#38bdf8',
+                    }}
+                  >
+                    ⚑
+                  </div>
                 )}
 
                 {/* Dot lattice — includes the field boundary and halfway line */}
@@ -1983,13 +2400,21 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
             />
           </div>
 
-          {/* Range-edit banner (Defender / GoalKeeper selected) */}
+          {/* Field-edit banner (Move / Defender / GoalKeeper selected) */}
           {rangeEdit && (
             <div className="mt-2 px-2.5 py-2 bg-[#0c1a24] border border-[#38bdf8]/60 text-[10px] font-mono text-[#bae6fd] space-y-1.5">
               <div className="flex items-center justify-between gap-2">
                 <span className="flex items-center gap-1.5 font-bold uppercase tracking-wider text-[#38bdf8]">
                   <Crosshair className="w-3.5 h-3.5" />
-                  {rangeEdit.label} range · Robot {rangeEdit.routine.robotId}
+                  {rangeEdit.isKick
+                    ? `KickA direction · ${rangeEdit.kickDeg}°`
+                    : rangeEdit.isMove
+                    ? 'Move destination'
+                    : rangeEdit.isPath
+                    ? 'Move from & to'
+                    : `${rangeEdit.label} range`}{' '}
+                  · Robot{' '}
+                  {rangeEdit.routine.robotId}
                 </span>
                 <button
                   onClick={() => setEditingRangeFor(null)}
@@ -1999,16 +2424,28 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
                 </button>
               </div>
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <span>
-                  <span className="text-[#38bdf8] font-bold">Left-click</span> = left end ·{' '}
-                  <span className="text-[#f472b6] font-bold">Right-click</span> = right end (drag
-                  to fine-tune)
-                </span>
+                {rangeEdit.isKick ? (
+                  <span>
+                    <span className="text-[#fabc4d] font-bold">Left-click / drag</span> = aim the
+                    arrow (0° = towards their goal) ·{' '}
+                    <span className="text-[#f472b6] font-bold">Right-click</span> = place the ball
+                  </span>
+                ) : rangeEdit.isMove ? (
+                  <span>
+                    <span className="text-[#38bdf8] font-bold">Left-click</span> = destination (drag
+                    to fine-tune) — the robot drives there from wherever it is
+                  </span>
+                ) : (
+                  <span>
+                    <span className="text-[#38bdf8] font-bold">Left-click</span> = {rangeEdit.names[0]} ·{' '}
+                    <span className="text-[#f472b6] font-bold">Right-click</span> = {rangeEdit.names[1]}{' '}
+                    (drag to fine-tune)
+                  </span>
+                )}
                 <span className="flex flex-wrap items-center gap-x-3 gap-y-1">
-                  {(
-                    [
-                      ['Kick-out', rangeEdit.kickoutCm, bumpKickout, 5],
-                    ] as const
+                  {(rangeEdit.isGK || rangeEdit.isMove || rangeEdit.isPath || rangeEdit.isKick
+                    ? []
+                    : ([['Kick-out', rangeEdit.kickoutCm, bumpKickout, 5]] as const)
                   ).map(([name, value, bump, stepCm]) => (
                     <span key={name} className="flex items-center gap-1">
                       {name}
