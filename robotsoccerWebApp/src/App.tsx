@@ -19,6 +19,7 @@ import {
   pickSaveFile,
   writeToFile,
 } from './utils/fileAccess';
+import { sendToMain } from './utils/sendToMain';
 
 /** Blocks that no longer exist (e.g. KickB) are dropped from strategies loaded from a file. */
 const REMOVED_BLOCKS = new Set(['kickB']);
@@ -107,6 +108,25 @@ export default function App() {
     saveTo(updated, true);
   };
 
+  /** Sends the current strategy to the main machine (address = HOST IP in SETUP). */
+  const [sendingToMain, setSendingToMain] = useState(false);
+  const handleSendToMain = async () => {
+    if (sendingToMain) return;
+    setSendingToMain(true);
+    try {
+      const r = await sendToMain(hostIp, strategy);
+      showToast(
+        r.verified
+          ? `Sent ${r.filename} to ${hostIp} — verified identical (${r.hash.slice(0, 8)})`
+          : `Sent ${r.filename} to ${hostIp} (${r.bytes} bytes, ${r.hash.slice(0, 8)})`
+      );
+    } catch (err) {
+      showToast(`Send failed: ${(err as Error).message}`);
+    } finally {
+      setSendingToMain(false);
+    }
+  };
+
   /** Import through the browser's Open dialog so the file stays linked for Save (Chrome / Edge). */
   const handleOpenFromComputer = async () => {
     try {
@@ -154,6 +174,8 @@ export default function App() {
             onSaveAsStrategy={() => setStrategyModalMode('saveAs')}
             onImportStrategy={() => setStrategyModalMode('import')}
             onTestInSimulation={() => setCurrentScreen('simulation')}
+            onSendToMain={handleSendToMain}
+            sendingToMain={sendingToMain}
           />
         )}
 

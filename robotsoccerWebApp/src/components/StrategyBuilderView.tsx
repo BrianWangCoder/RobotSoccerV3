@@ -27,6 +27,7 @@ import {
   PauseCircle,
   Route,
   Repeat,
+  Send,
 } from 'lucide-react';
 import {
   StrategyConfig,
@@ -646,6 +647,9 @@ interface StrategyBuilderViewProps {
   onImportStrategy: () => void;
   /** Jump to the simulator with the current strategy loaded. */
   onTestInSimulation?: () => void;
+  /** Send the current strategy to the main machine that drives the robots. */
+  onSendToMain?: () => void;
+  sendingToMain?: boolean;
 }
 
 export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
@@ -655,6 +659,8 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
   onSaveAsStrategy,
   onImportStrategy,
   onTestInSimulation,
+  onSendToMain,
+  sendingToMain = false,
 }) => {
   const activeSituation =
     strategy.situations.find((s) => s.id === strategy.activeSituationId) ||
@@ -2133,6 +2139,18 @@ export const StrategyBuilderView: React.FC<StrategyBuilderViewProps> = ({
             <Upload className="w-3.5 h-3.5" />
             <span>IMPORT</span>
           </button>
+
+          {onSendToMain && (
+            <button
+              onClick={onSendToMain}
+              disabled={sendingToMain}
+              title="Send this strategy to the main machine (HOST IP in SETUP)"
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-[#1e2024] border border-[#3DD68C]/60 hover:border-[#3DD68C] hover:bg-[#3DD68C]/10 text-[#3DD68C] text-xs font-bold uppercase tracking-wider transition-colors cursor-pointer disabled:opacity-60 disabled:cursor-wait"
+            >
+              <Send className={`w-3.5 h-3.5 ${sendingToMain ? 'animate-pulse' : ''}`} />
+              <span>{sendingToMain ? 'SENDING…' : 'SEND TO MAIN'}</span>
+            </button>
+          )}
 
           {onTestInSimulation && (
             <button
