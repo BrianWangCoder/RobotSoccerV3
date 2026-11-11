@@ -16,6 +16,16 @@ import {
 import { StrategyConfig } from '../types/strategy';
 import { FIELD, ROBOT_HALF, BALL_R } from '../sim/engine';
 import { PitchLines, PITCH_VIEWBOX, PITCH_SURROUND, TEAM_COLORS } from './PitchLines';
+import { mainUrl, startMatch, stopMatch } from '../utils/sendToMain';
+
+/** What the main machine reports over its WebSocket (server/controller.ts getStatus). */
+interface MainStatus {
+  running: boolean;
+  side: 'left' | 'right';
+  strategy: { filename: string; hash: string } | null;
+  vision: { fresh: boolean; fps: number };
+  robots: { id: number; seen: boolean; status: string }[];
+}
 
 /*
  * Positions here are % of the PLAYING FIELD (wall to wall, 265 × 185 cm), drawn on the same pitch
@@ -32,6 +42,8 @@ const toMetres = (pct: number, half: number) => Number((((pct / 100) * 2 - 1) * 
 
 interface LivePlayViewProps {
   strategy: StrategyConfig;
+  /** Main machine address (SETUP). */
+  hostIp: string;
   onImportStrategy: () => void;
 }
 
@@ -55,8 +67,44 @@ interface OpponentBot {
 
 export const LivePlayView: React.FC<LivePlayViewProps> = ({
   strategy,
+  hostIp,
   onImportStrategy,
 }) => {
+  // Live link to the main machine: status pushed 10×/s over its WebSocket, reconnecting if lost
+  const [mainStatus, setMainStatus] = useState<MainStatus | null>(null);
+  const [ourSide, setOurSide] = useState<'left' | 'right'>('left');
+  useEffect(() => {
+    let ws: WebSocket | null = null;
+    let retry: ReturnType<typeof setTimeout> | undefined;
+    let closed = false;
+    const connect = () => {
+      try {
+        ws = new WebSocket(mainUrl(hostIp).replace(/^http/, 'ws') + '/ws');
+      } catch {
+        retry = setTimeout(connect, 2000);
+        return;
+      }
+      ws.onmessage = (ev) => {
+        try {
+          const m = JSON.parse(ev.data);
+          if (m.type === 'status') setMainStatus(m.status);
+        } catch {
+          /* ignore */
+        }
+      };
+      ws.onclose = () => {
+        setMainStatus(null);
+        if (!closed) retry = setTimeout(connect, 2000);
+      };
+    };
+    connect();
+    return () => {
+      closed = true;
+      clearTimeout(retry);
+      ws?.close();
+    };
+  }, [hostIp]);
+
   const [matchState, setMatchState] = useState<'IDLE' | 'PREPARING' | 'RUNNING' | 'STOPPED'>('STOPPED');
   const [selectedTeam, setSelectedTeam] = useState<'RED' | 'BLUE'>('RED');
   const [selectedBotId, setSelectedBotId] = useState<number | null>(null);
@@ -172,14 +220,24 @@ export const LivePlayView: React.FC<LivePlayViewProps> = ({
     }, 1200);
   };
 
-  const handleStart = () => {
-    setMatchState('RUNNING');
-    addLog('[REFEREE] NORMAL_START - Match actively running.');
+  const handleStart = async () => {
+    try {
+      await startMatch(hostIp, ourSide);
+      setMatchState('RUNNING');
+      addLog(`[MAIN] START — robots running ${mainStatus?.strategy?.filename ?? 'the loaded strategy'} (our goal: ${ourSide})`);
+    } catch (err) {
+      addLog(`[MAIN] START failed: ${(err as Error).message}`);
+    }
   };
 
-  const handleStop = () => {
+  const handleStop = async () => {
     setMatchState('STOPPED');
-    addLog('[REFEREE] STOP / HALT - Zero velocity issued to all actuators.');
+    try {
+      await stopMatch(hostIp);
+      addLog('[MAIN] STOP — zero velocity sent to every robot.');
+    } catch (err) {
+      addLog(`[MAIN] STOP failed: ${(err as Error).message} — use the robots' power switches!`);
+    }
   };
 
   const handleTestActuators = () => {
@@ -192,6 +250,7 @@ export const LivePlayView: React.FC<LivePlayViewProps> = ({
   };
 
   const handleRefereeCommand = (cmd: string) => {
+    if (cmd === 'HALT_ALL') return void handleStop();
     addLog(`[REFEREE CMD] ${cmd}`);
   };
 
@@ -224,6 +283,20 @@ export const LivePlayView: React.FC<LivePlayViewProps> = ({
             <div className="px-3 py-1 bg-[#0F1115] border border-[#2D3139] text-[#fabc4d] text-xs font-mono font-bold tracking-wide">
               {strategy.filename}
             </div>
+          </div>
+
+          {/* MAIN MACHINE link */}
+          <div
+            className={`hidden md:flex items-center gap-2 px-2 py-1 border text-[11px] font-mono font-bold ${
+              mainStatus ? 'border-[#3DD68C]/50 text-[#3DD68C]' : 'border-red-800 text-red-400'
+            }`}
+            title={mainStatus?.strategy ? `Main has ${mainStatus.strategy.filename} (${mainStatus.strategy.hash.slice(0, 8)})` : undefined}
+          >
+            {mainStatus
+              ? `MAIN: ${mainStatus.strategy?.filename ?? 'NO STRATEGY'} · VISION ${
+                  mainStatus.vision.fresh ? `${mainStatus.vision.fps} FPS` : 'NONE'
+                } · ${mainStatus.robots.filter((r) => r.seen).length}/5 SEEN${mainStatus.running ? ' · RUNNING' : ''}`
+              : `MAIN ${hostIp}: NOT CONNECTED`}
           </div>
         </div>
 
@@ -471,6 +544,25 @@ export const LivePlayView: React.FC<LivePlayViewProps> = ({
             <span className="text-xs font-bold uppercase tracking-wider text-white">
               MATCH CONTROLS
             </span>
+          </div>
+
+          {/* Which goal is ours as the camera sees it (swap at half time) */}
+          <div className="mt-4 flex items-center justify-between text-xs">
+            <span className="font-bold uppercase tracking-wider text-[#8E95A5]">OUR GOAL:</span>
+            <div className="flex items-center gap-1">
+              {(['left', 'right'] as const).map((s) => (
+                <button
+                  key={s}
+                  onClick={() => setOurSide(s)}
+                  disabled={mainStatus?.running}
+                  className={`px-2.5 py-1 font-bold uppercase transition-colors cursor-pointer disabled:cursor-not-allowed ${
+                    ourSide === s ? 'bg-[#fabc4d] text-[#111317]' : 'bg-[#1e2024] text-[#8E95A5] border border-[#2D3139]'
+                  }`}
+                >
+                  {s}
+                </button>
+              ))}
+            </div>
           </div>
 
           {/* Action Buttons: PREPARE, START, STOP matching Screenshot 2 */}

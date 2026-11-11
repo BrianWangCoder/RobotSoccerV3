@@ -63,13 +63,17 @@ export const StrategyModal: React.FC<StrategyModalProps> = ({
       try {
         const content = event.target?.result as string;
         const parsed = JSON.parse(content);
-        onSelectStrategy(parsed);
+        if (!Array.isArray(parsed?.routines) || !Array.isArray(parsed?.situations)) {
+          throw new Error('That file is not a strategy (no routines / situations).');
+        }
+        onSelectStrategy({ ...parsed, filename: file.name });
         onClose();
       } catch (err) {
-        setImportError('Failed to parse uploaded JSON file.');
+        setImportError(err instanceof SyntaxError ? 'Failed to parse uploaded JSON file.' : (err as Error).message);
       }
     };
     reader.readAsText(file);
+    e.target.value = ''; // picking the same file again still fires onChange
   };
 
   return (

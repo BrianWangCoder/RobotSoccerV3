@@ -221,7 +221,7 @@ export interface SimWorld {
   progress: { x: number; y: number; since: number };
 }
 
-interface Command {
+export interface Command {
   tx: number;
   ty: number;
   speed: number; // 0..1
@@ -1051,7 +1051,12 @@ const opponentCommand = (w: SimWorld, o: SimRobot): Command => {
 const ARRIVE = 25; // mm
 const MAX_ROLL_YAW = 0.3; // rad/s (~17°/s) — the most a robot may turn while rolling: tiny corrections only
 
-const drive = (r: SimRobot, cmd: Command, dt: number, now = 0) => {
+/**
+ * The controller half of driving: from the robot's pose and a command, work out the wheel speeds
+ * to send this tick (ramped by the motor acceleration limit) and store them in r.wl / r.wr.
+ * Used by the simulator (then integrated by drive) AND by the main machine for the real robots.
+ */
+export const wheelCommand = (r: SimRobot, cmd: Command, dt: number, now = 0) => {
   let c = cmd;
   if (r.escape) {
     if (now > r.escape.until || hyp(r.escape.tx - r.x, r.escape.ty - r.y) < ARRIVE) r.escape = null;
@@ -1189,7 +1194,15 @@ const drive = (r: SimRobot, cmd: Command, dt: number, now = 0) => {
   const ramp = Math.min(1, dv / Math.max(Math.abs(tl - r.wl), Math.abs(tr - r.wr), 1e-9));
   r.wl += (tl - r.wl) * ramp;
   r.wr += (tr - r.wr) * ramp;
+};
 
+/** Simulator only: command the wheels, then move the robot as the physics says. */
+const drive = (r: SimRobot, cmd: Command, dt: number, now = 0) => {
+  wheelCommand(r, cmd, dt, now);
+  const toRad = Math.PI / 180;
+  const rad = (r.angle * Math.PI) / 180;
+  const hx = Math.cos(rad);
+  const hy = Math.sin(rad);
   const fwd = (r.wl + r.wr) / 2;
   const yaw = (r.wr - r.wl) / WHEEL_BASE; // rad/s
 
@@ -1239,7 +1252,7 @@ const keepInsideWalls = (r: SimRobot) => {
  * barely moved for 0.6 s, it backs off ~15 cm in a straight line away from whatever is blocking
  * it, then goes back to its job.
  */
-const unstick = (
+export const unstick = (
   all: SimRobot[],
   before: Map<SimRobot, readonly [number, number]>,
   now: number,
@@ -1521,10 +1534,12 @@ export const routineFor = (strategy: StrategyConfig, situationId: string | null,
     ? strategy.routines.find((r) => r.situationId === situationId && r.robotId === robotId) ?? null
     : null;
 
-export const step = (w: SimWorld, strategy: StrategyConfig, dt: number) => {
-  w.time += dt;
-  w.oppKickCooldown -= dt;
-
+/**
+ * The DECISION half of a tick, shared by the simulator and the real robots: find the ball's zone
+ * and run every friendly robot's block stack for it. Returns each robot's command (benched robots
+ * get none). Does not move anything.
+ */
+export const runStacks = (w: SimWorld, strategy: StrategyConfig, dt: number) => {
   // 1. Which zone is the ball in?
   const zone = zonesAt(strategy, w.ball.x, w.ball.y)[0] ?? null;
   const zoneId = zone?.id ?? null;
@@ -1628,6 +1643,28 @@ export const step = (w: SimWorld, strategy: StrategyConfig, dt: number) => {
       st.stepGoal = null;
     }
   });
+  return commands;
+};
+
+/** A robot made a deliberate hit on the ball: finish its KickA, or send a Defender/GK back to its line. */
+export const registerHit = (w: SimWorld, strategy: StrategyConfig, r: SimRobot) => {
+  const st = w.exec[r.id];
+  const routine = routineFor(strategy, w.activeSituationId, r.id);
+  const blk = routine?.blocks.length ? routine.blocks[st.blockIdx] : st.role;
+  if (blk && blk.type === 'kickA') {
+    st.phase = 1; // finishes the kick block next tick
+    log(w, `${r.label} shot (KickA)`);
+  } else if (blk && (blk.type === 'defender' || blk.type === 'goalkeeper')) {
+    st.phase = 1; // back to the line
+    log(w, `${r.label} cleared the ball (${blk.type === 'goalkeeper' ? 'GoalKeeper' : 'Defender'})`);
+  }
+};
+
+/** Simulator tick: decide, then move everything with the physics model. */
+export const step = (w: SimWorld, strategy: StrategyConfig, dt: number) => {
+  w.time += dt;
+  w.oppKickCooldown -= dt;
+  const commands = runStacks(w, strategy, dt);
 
   // 3. Opponents
   const opps = (w.opponentsEnabled ? w.opponents : []).filter((o) => !o.benched);
@@ -1644,18 +1681,7 @@ export const step = (w: SimWorld, strategy: StrategyConfig, dt: number) => {
 
   ours.forEach((r) => {
     const cmd = commands.get(r.id)!;
-    if (ballContact(w, r, cmd.kick)) {
-      const st = w.exec[r.id];
-      const routine = routineFor(strategy, zoneId, r.id);
-      const blk = routine?.blocks.length ? routine.blocks[st.blockIdx] : st.role;
-      if (blk && blk.type === 'kickA') {
-        st.phase = 1; // finishes the kick block next tick
-        log(w, `${r.label} shot (KickA)`);
-      } else if (blk && (blk.type === 'defender' || blk.type === 'goalkeeper')) {
-        st.phase = 1; // back to the line
-        log(w, `${r.label} cleared the ball (${blk.type === 'goalkeeper' ? 'GoalKeeper' : 'Defender'})`);
-      }
-    }
+    if (ballContact(w, r, cmd.kick)) registerHit(w, strategy, r);
   });
   opps.forEach((r) => {
     if (ballContact(w, r, commands.get(r.id)!.kick)) w.oppKickCooldown = 1.2;

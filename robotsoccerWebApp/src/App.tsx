@@ -33,7 +33,22 @@ const withoutRemovedBlocks = (s: StrategyConfig): StrategyConfig => ({
 
 export default function App() {
   const [currentScreen, setCurrentScreen] = useState<ActiveScreen>('home');
-  const [hostIp, setHostIp] = useState<string>('192.168.1.104');
+  // Main machine address — remembered on this laptop between visits
+  const [hostIp, setHostIpState] = useState<string>(() => {
+    try {
+      return localStorage.getItem('mainHost') || '192.168.1.104';
+    } catch {
+      return '192.168.1.104';
+    }
+  });
+  const setHostIp = (ip: string) => {
+    setHostIpState(ip.trim());
+    try {
+      localStorage.setItem('mainHost', ip.trim());
+    } catch {
+      /* storage blocked: keep it for this visit only */
+    }
+  };
   const [strategy, setStrategy] = useState<StrategyConfig>(createBlankStrategy);
 
   // Modals state
@@ -63,7 +78,7 @@ export default function App() {
       showToast(
         window.isSecureContext
           ? `Downloaded ${strat.filename} — this browser can't save into the same file (use Chrome or Edge)`
-          : `Downloaded ${strat.filename} — to save into the same file, open the app at http://localhost:3000 or with npm run dev:https`
+          : `Downloaded ${strat.filename} — to save into the same file, open the app at http://localhost:3000`
       );
       return;
     }
@@ -132,7 +147,8 @@ export default function App() {
     try {
       const { handle, text } = await pickOpenFile();
       const parsed = JSON.parse(text) as StrategyConfig;
-      if (!parsed.routines) throw new Error('That file is not a strategy (no routines).');
+      if (!Array.isArray(parsed?.routines) || !Array.isArray(parsed?.situations))
+        throw new Error('That file is not a strategy (no routines / situations).');
       fileRef.current = handle;
       setStrategy(withoutRemovedBlocks({ ...parsed, filename: handle.name }));
       showToast(`Opened ${handle.name} — Save now writes back into it`);
@@ -182,6 +198,7 @@ export default function App() {
         {currentScreen === 'play' && (
           <LivePlayView
             strategy={strategy}
+            hostIp={hostIp}
             onImportStrategy={() => setStrategyModalMode('import')}
           />
         )}

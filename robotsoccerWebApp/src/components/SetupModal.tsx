@@ -1,5 +1,6 @@
-import React, { useState } from 'react';
-import { X, Wifi, Radio, Server, Check } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import { X, Wifi, Server, Check, Activity } from 'lucide-react';
+import { mainUrl, pingMain } from '../utils/sendToMain';
 
 interface SetupModalProps {
   isOpen: boolean;
@@ -8,17 +9,20 @@ interface SetupModalProps {
   onSaveHostIp: (ip: string) => void;
 }
 
-export const SetupModal: React.FC<SetupModalProps> = ({
-  isOpen,
-  onClose,
-  hostIp,
-  onSaveHostIp,
-}) => {
+type TestState = { kind: 'idle' } | { kind: 'busy' } | { kind: 'ok' | 'err'; msg: string };
+
+export const SetupModal: React.FC<SetupModalProps> = ({ isOpen, onClose, hostIp, onSaveHostIp }) => {
   const [ip, setIp] = useState(hostIp);
-  const [visionPort, setVisionPort] = useState('10006');
-  const [refPort, setRefPort] = useState('10003');
-  const [channel, setChannel] = useState('2.4 GHz (CH 11)');
   const [saved, setSaved] = useState(false);
+  const [test, setTest] = useState<TestState>({ kind: 'idle' });
+
+  // Show the current value every time the dialog opens (drops unsaved edits from last time)
+  useEffect(() => {
+    if (isOpen) {
+      setIp(hostIp);
+      setTest({ kind: 'idle' });
+    }
+  }, [isOpen, hostIp]);
 
   if (!isOpen) return null;
 
@@ -32,6 +36,19 @@ export const SetupModal: React.FC<SetupModalProps> = ({
     }, 600);
   };
 
+  const handleTest = async () => {
+    setTest({ kind: 'busy' });
+    try {
+      const r = await pingMain(ip);
+      setTest({
+        kind: 'ok',
+        msg: `Connected · ${r.strategy ? `has ${r.strategy}` : 'no strategy yet'}${r.running ? ' · MATCH RUNNING' : ''}`,
+      });
+    } catch (err) {
+      setTest({ kind: 'err', msg: (err as Error).message });
+    }
+  };
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-xs p-4">
       <div className="w-full max-w-md bg-[#181A1E] border border-[#2D3139] text-[#e2e2e8] shadow-2xl">
@@ -40,13 +57,10 @@ export const SetupModal: React.FC<SetupModalProps> = ({
           <div className="flex items-center gap-2">
             <Server className="w-4 h-4 text-[#fabc4d]" />
             <span className="text-xs font-bold uppercase tracking-wider text-[#ffc665]">
-              SSL-VISION & RADIO SETUP
+              MAIN MACHINE SETUP
             </span>
           </div>
-          <button
-            onClick={onClose}
-            className="text-[#8E95A5] hover:text-white transition-colors"
-          >
+          <button onClick={onClose} className="text-[#8E95A5] hover:text-white transition-colors">
             <X className="w-4 h-4" />
           </button>
         </div>
@@ -55,70 +69,50 @@ export const SetupModal: React.FC<SetupModalProps> = ({
         <form onSubmit={handleSave} className="p-4 space-y-4">
           <div>
             <label className="block text-[11px] font-bold uppercase text-[#8E95A5] mb-1">
-              SSL-VISION MULTICAST HOST IP
+              MAIN MACHINE IP
             </label>
             <div className="flex items-center bg-[#0F1115] border border-[#2D3139] focus-within:border-[#fabc4d] px-3 py-2">
               <Wifi className="w-4 h-4 text-[#fabc4d] mr-2 shrink-0" />
               <input
                 type="text"
                 value={ip}
-                onChange={(e) => setIp(e.target.value)}
+                onChange={(e) => {
+                  setIp(e.target.value);
+                  setTest({ kind: 'idle' });
+                }}
                 className="w-full bg-transparent text-sm text-white font-mono focus:outline-hidden"
                 placeholder="192.168.1.104"
               />
             </div>
             <span className="text-[10px] text-[#8E95A5] mt-1 block">
-              Default SSL-Vision optical tracking broadcast endpoint
+              The computer running <span className="font-mono text-white">npm run server</span> — strategies go to{' '}
+              <span className="font-mono text-white">{mainUrl(ip || '…')}</span>. On the main machine itself use{' '}
+              <span className="font-mono text-white">127.0.0.1</span>.
             </span>
           </div>
 
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="block text-[11px] font-bold uppercase text-[#8E95A5] mb-1">
-                VISION PORT
-              </label>
-              <input
-                type="text"
-                value={visionPort}
-                onChange={(e) => setVisionPort(e.target.value)}
-                className="w-full bg-[#0F1115] border border-[#2D3139] px-3 py-2 text-sm text-white font-mono focus:border-[#fabc4d] focus:outline-hidden"
-              />
-            </div>
-            <div>
-              <label className="block text-[11px] font-bold uppercase text-[#8E95A5] mb-1">
-                REFEREE PORT
-              </label>
-              <input
-                type="text"
-                value={refPort}
-                onChange={(e) => setRefPort(e.target.value)}
-                className="w-full bg-[#0F1115] border border-[#2D3139] px-3 py-2 text-sm text-white font-mono focus:border-[#fabc4d] focus:outline-hidden"
-              />
-            </div>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={handleTest}
+              disabled={test.kind === 'busy' || !ip.trim()}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold uppercase tracking-wider text-[#3DD68C] border border-[#3DD68C]/60 hover:border-[#3DD68C] transition-colors disabled:opacity-60"
+            >
+              <Activity className={`w-3.5 h-3.5 ${test.kind === 'busy' ? 'animate-pulse' : ''}`} />
+              {test.kind === 'busy' ? 'TESTING…' : 'TEST CONNECTION'}
+            </button>
           </div>
-
-          <div>
-            <label className="block text-[11px] font-bold uppercase text-[#8E95A5] mb-1">
-              ROBOT RADIO TRANSCEIVER BAND
-            </label>
-            <div className="flex items-center bg-[#0F1115] border border-[#2D3139] px-3 py-2">
-              <Radio className="w-4 h-4 text-[#3DD68C] mr-2 shrink-0" />
-              <select
-                value={channel}
-                onChange={(e) => setChannel(e.target.value)}
-                className="w-full bg-transparent text-sm text-white font-mono focus:outline-hidden"
-              >
-                <option value="2.4 GHz (CH 11)" className="bg-[#181A1E]">2.4 GHz (CH 11 - Primary)</option>
-                <option value="2.4 GHz (CH 18)" className="bg-[#181A1E]">2.4 GHz (CH 18 - Backup)</option>
-                <option value="868 MHz ISM" className="bg-[#181A1E]">868 MHz ISM (Sub-GHz)</option>
-              </select>
+          {(test.kind === 'ok' || test.kind === 'err') && (
+            <div
+              className={`p-2.5 border text-[11px] font-mono ${
+                test.kind === 'ok'
+                  ? 'bg-[#0F1115] border-[#3DD68C]/50 text-[#3DD68C]'
+                  : 'bg-red-950/30 border-red-800 text-red-400'
+              }`}
+            >
+              {test.msg}
             </div>
-          </div>
-
-          <div className="p-2.5 bg-[#0F1115] border border-[#2D3139] text-[11px] text-[#8E95A5] flex items-center justify-between">
-            <span>PACKET STATUS:</span>
-            <span className="text-[#3DD68C] font-bold">100% RECEIVED (60 FPS)</span>
-          </div>
+          )}
 
           {/* Footer */}
           <div className="flex items-center justify-end gap-2 pt-2 border-t border-[#2D3139]">
